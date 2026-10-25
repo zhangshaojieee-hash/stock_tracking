@@ -1,0 +1,11 @@
+This project is based on the upstream project:
+https://github.com/huigezhi/stock_tracking
+
+The upstream project is distributed under the Apache License 2.0.
+The LICENSE file is retained in this repository.
+
+This private fork contains local modifications, including changes to the
+MACD monitoring UI, independent divergence confirmation scans, snapshot
+handling, model/training utilities, and deployment scripts.
+
+The upstream authors do not endorse or provide warranties for this fork.

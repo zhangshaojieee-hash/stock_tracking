@@ -1,0 +1,36 @@
+# 真实配置含飞书密钥, 不入库(复制 config.example.json 后填写)
+macd-monitor/config.json
+# 运行时产物
+macd-monitor/state.json
+macd-monitor/monitor.log
+macd-monitor/all_stocks.json
+macd-monitor/etf_share_hist.json
+macd-monitor/div_hist.json
+macd-monitor/div_hist.json.bak
+macd-monitor/kline_cache.json
+macd-monitor/data.db*
+# 每日重训产物(VPS本地生成, 入库会导致git pull冲突; 首次训练需样本>=300)
+macd-monitor/model.json
+macd-monitor/dataset.json
+macd-monitor/retrain.log
+__pycache__/
+# TRAE 预览分享产物(IDE自动生成, 不入库)
+.trae-html-share-packages/
+# 本机 SSH 隧道快捷方式(含服务器IP, 不入库)
+访问WebUI.bat
+.uploads/
+# 模型版本快照与AUC记录(重训运行时产物, 不入库)
+macd-monitor/models/
+macd-monitor/last_train_auc.txt
+# 本机运行日志、临时状态和 Tunnel 地址
+*.log
+cloudflare-url.txt
+macd-monitor/monitor_heartbeat
+macd-monitor/webui-runtime-error.log
+macd-monitor/webui-runtime.log
+macd-monitor/webui.err.log
+macd-monitor/webui.out.log
+macd-monitor/monitor.err.log
+macd-monitor/monitor.out.log
+macd-monitor/model.json.bad-*
+macd-monitor/data.db.pre-week-date-fix-*

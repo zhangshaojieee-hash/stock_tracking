@@ -1,0 +1,860 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+MACD 金叉/死叉 + 底背离/顶背离 监控 + 飞书机器人提醒
+数据源: 腾讯行情 (ifzq.gtimg.cn)  K线: 1m/5m/15m/30m/60m/日线/周线
+用法:
+  python3 monitor.py --report   # 查看各周期 MACD 状态与近期信号(不发通知、不写状态)
+  python3 monitor.py --once     # 扫描一轮, 输出新信号并退出(可用于测试推送)
+  python3 monitor.py            # 启动持续监控
+"""
+import argparse
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import os
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+
+import requests
+
+CST = timezone(timedelta(hours=8))
+BASE = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE, "config.json")
+STATE_PATH = os.path.join(BASE, "state.json")
+LOG_PATH = os.path.join(BASE, "monitor.log")
+
+TF_MIN = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "60m": 60}
+TF_NAME = {"1m": "1分钟", "5m": "5分钟", "15m": "15分钟", "30m": "30分钟", "60m": "60分钟", "day": "日线", "week": "周线"}
+MIN_BARS = 35          # MACD 至少需要的K线数
+MIN_COUNT = 640        # 分钟线拉取根数
+DAYW_COUNT = 300       # 日线/周线拉取根数
+STATE_LIMIT = 3000     # 状态去重键上限
+
+S = requests.Session()
+S.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"})
+
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[logging.FileHandler(LOG_PATH, encoding="utf-8"), logging.StreamHandler()],
+)
+log = logging.getLogger("macd")
+
+
+# ---------------- 基础工具 ----------------
+
+def now_cst():
+    return datetime.now(CST)
+
+
+def load_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def save_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def norm_code(code):
+    """支持 600519 / sh600519 两种写法"""
+    code = str(code).strip().lower()
+    if len(code) == 6 and code.isdigit():
+        if code[0] in "69":
+            return "sh" + code
+        if code[0] in "03":
+            return "sz" + code
+    return code
+
+
+def is_trading_time(now):
+    """A股交易时段(含少量缓冲): 周一至周五 9:25-11:35 / 12:55-15:10"""
+    if now.weekday() >= 5:
+        return False
+    hm = now.hour * 100 + now.minute
+    return 925 <= hm <= 1135 or 1255 <= hm <= 1510
+
+
+# ---------------- 行情数据 ----------------
+
+_fail_streak = {}  # (code, tf) -> 连续失败轮数, 用于区分偶发超时与持续故障
+
+
+def _klines_once(code, tf, count):
+    """单次请求K线, 失败抛异常"""
+    if tf in TF_MIN:
+        url = ("https://ifzq.gtimg.cn/appstock/app/kline/mkline"
+               f"?param={code},m{TF_MIN[tf]},,{count}")
+        r = S.get(url, timeout=8)
+        # 分钟线接口的key是 m1/m5/m15/m30/m60 (tf名称仍使用1m/5m等)
+        # 美股等标的接口不支持: data直接返回空列表, data[code]会抛TypeError
+        data = r.json().get("data")
+        if not isinstance(data, dict) or code not in data:
+            raise ValueError(f"分钟线接口不支持该标的(返回data类型={type(data).__name__})")
+        rows = data[code].get(f"m{TF_MIN[tf]}") or []
+        return [(row[0], float(row[2])) for row in rows if len(row) >= 3]
+    url = ("https://ifzq.gtimg.cn/appstock/app/fqkline/get"
+           f"?param={code},{tf},,,{count},qfq")
+    r = S.get(url, timeout=8)
+    try:
+        data = r.json()["data"][code]
+    except Exception:
+        # fqkline 被WAF拦截(501页面)时回退到非复权接口
+        url = ("https://ifzq.gtimg.cn/appstock/app/kline/kline"
+               f"?param={code},{tf},,,{count}")
+        r = S.get(url, timeout=8)
+        data = r.json()["data"][code]
+    rows = data.get(tf) or data.get("qfq" + tf) or []
+    return [(row[0], float(row[2])) for row in rows if len(row) >= 3]
+
+
+def fetch_ohlc_klines(code, tf, count, retries=2):
+    """返回 [(label, open, close, high, low), ...] 时间升序。"""
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            if tf in TF_MIN:
+                url = ("https://ifzq.gtimg.cn/appstock/app/kline/mkline"
+                       f"?param={code},m{TF_MIN[tf]},,{count}")
+                data = S.get(url, timeout=8).json().get("data")
+                if not isinstance(data, dict) or code not in data:
+                    raise ValueError("分钟线接口返回空数据")
+                rows = data[code].get(f"m{TF_MIN[tf]}") or []
+            else:
+                url = ("https://ifzq.gtimg.cn/appstock/app/fqkline/get"
+                       f"?param={code},{tf},,,{count},qfq")
+                response = S.get(url, timeout=8)
+                try:
+                    data = response.json()["data"][code]
+                except Exception:
+                    url = ("https://ifzq.gtimg.cn/appstock/app/kline/kline"
+                           f"?param={code},{tf},,,{count}")
+                    data = S.get(url, timeout=8).json()["data"][code]
+                rows = data.get(tf) or data.get("qfq" + tf) or []
+            return [(row[0], float(row[1]), float(row[2]), float(row[3]), float(row[4]))
+                    for row in rows if len(row) >= 5]
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                time.sleep(1 + attempt)
+    log.info("获取OHLC失败 %s %s: %s", code, tf, last_err)
+    return []
+
+
+def fetch_klines(code, tf, count, retries=2):
+    """返回 [(label, close), ...] 时间升序, 带重试。
+    分钟线 label='202608241500'(K线结束时刻), 日/周线 label='2026-08-24'
+    偶发超时只记INFO(不推飞书), 连续多轮失败才升级WARNING推送告警"""
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            rows = _klines_once(code, tf, count)
+            prev = _fail_streak.pop((code, tf), 0)
+            if prev >= 4:
+                log.info("K线接口已恢复: %s %s (此前连续失败%d轮)", code, tf, prev)
+            return rows
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                time.sleep(1 + attempt)  # 退避1s/2s后重试
+    streak = _fail_streak.get((code, tf), 0) + 1
+    _fail_streak[(code, tf)] = streak
+    if streak >= 4:
+        # 持续失败降频告警: 首次(streak=4)立即WARNING推送, 之后每50轮提醒一次,
+        # 避免长期不可恢复的标的(如美股分钟线)每轮刷WARNING
+        if streak == 4 or streak % 50 == 0:
+            log.warning("获取K线失败 %s %s (已连续%d轮, 请检查网络/接口): %s",
+                        code, tf, streak, last_err)
+        else:
+            log.info("获取K线持续失败 %s %s (已连续%d轮): %s",
+                     code, tf, streak, last_err)
+    else:
+        log.info("获取K线临时失败 %s %s (第%d轮, 下轮自动重试): %s",
+                 code, tf, streak, last_err)
+    return []
+
+
+# ---------------- MACD ----------------
+
+def macd(closes, fast=12, slow=26, sig=9):
+    """标准MACD(12,26,9), 返回 (DIF, DEA, 柱)"""
+    ef = es = dea = None
+    dif_l, dea_l, hist_l = [], [], []
+    kf, ks, kd = 2 / (fast + 1), 2 / (slow + 1), 2 / (sig + 1)
+    for c in closes:
+        ef = c if ef is None else ef + (c - ef) * kf
+        es = c if es is None else es + (c - es) * ks
+        d = ef - es
+        dea = d if dea is None else dea + (d - dea) * kd
+        dif_l.append(d)
+        dea_l.append(dea)
+        hist_l.append(2 * (d - dea))
+    return dif_l, dea_l, hist_l
+
+
+def detect_cross(dif, dea, i):
+    """第 i 根K线上是否发生交叉: 'golden' / 'death' / None"""
+    if i < 1:
+        return None
+    prev = dif[i - 1] - dea[i - 1]
+    cur = dif[i] - dea[i]
+    if prev <= 0 < cur:
+        return "golden"
+    if prev >= 0 > cur:
+        return "death"
+    return None
+
+
+# ---------------- 背离检测 ----------------
+PIVOT_WIN = 4        # DIF极值确认窗口: 前后各4根已收盘K线
+DIV_MIN_GAP = 5      # 参与比较的两个极值间的最少K线数
+DIV_MAX_GAP = 120    # 两个极值间最多K线数(超过视为不同波段, 不构成一对)
+
+
+def find_dif_pivots(dif, upto, k=PIVOT_WIN):
+    """已确认的DIF局部极值: bar i 前后各k根DIF都比它大(低点)或都小(高点),
+    只扫描索引 <= upto 的已收盘K线。返回 (低点索引列表, 高点索引列表), 升序"""
+    lows, highs = [], []
+    for i in range(k, upto - k + 1):
+        seg = dif[i - k:i + k + 1]
+        v = dif[i]
+        if seg.count(v) != 1:      # 并列极值(平台)不取, 避免歧义
+            continue
+        if v == min(seg):
+            lows.append(i)
+        elif v == max(seg):
+            highs.append(i)
+    return lows, highs
+
+
+def detect_divergences(bars, dif, last_completed, pairs=1, confirm_bars=PIVOT_WIN):
+    """按已收盘确认K线数量独立检测底背离/顶背离结构。"""
+    try:
+        confirm_bars = int(confirm_bars)
+    except (TypeError, ValueError):
+        confirm_bars = PIVOT_WIN
+    confirm_bars = max(1, min(PIVOT_WIN, confirm_bars))
+    if last_completed < 2 * confirm_bars + DIV_MIN_GAP:
+        return []
+    closes = [c for _, c in bars]
+    lows, highs = find_dif_pivots(dif, last_completed, k=confirm_bars)
+    out = []
+    for pivots, kind in ((lows, "bull"), (highs, "bear")):
+        # pairs 超过极值数时切片会被钳制到列表头, 导致自身配对, 故按实际数量封顶
+        n = min(pairs, len(pivots) - 1) if len(pivots) > 1 else 0
+        for p1, p2 in zip(pivots[-n - 1:-1], pivots[-n:]):
+            if not (DIV_MIN_GAP <= p2 - p1 <= DIV_MAX_GAP):
+                continue
+            c1, c2, d1, d2 = closes[p1], closes[p2], dif[p1], dif[p2]
+            if kind == "bull":
+                ok = d1 < 0 and d2 < 0 and c2 < c1 and d2 > d1
+            else:
+                ok = d1 > 0 and d2 > 0 and c2 > c1 and d2 < d1
+            confirm = p2 + confirm_bars
+            if ok and confirm <= last_completed:
+                out.append({"div": kind, "p1": p1, "p2": p2,
+                            "c1": c1, "c2": c2, "d1": d1, "d2": d2,
+                            "confirm": confirm})
+    return out
+
+
+# ---------------- K线完成判断 ----------------
+
+def minute_dt(label):
+    return datetime.strptime(label, "%Y%m%d%H%M").replace(tzinfo=CST)
+
+
+def week_id(d):
+    iy, iw, _ = d.isocalendar()
+    return f"{iy}-W{iw:02d}"
+
+
+def bar_complete(tf, label, now):
+    """该K线是否已收盘完成(只在完成的K线上发信号, 避免盘中反复)"""
+    if tf in TF_MIN:
+        return now >= minute_dt(label)  # 腾讯分钟线label为结束时刻
+    d = datetime.strptime(label, "%Y-%m-%d").date()
+    if tf == "day":
+        return now >= datetime(d.year, d.month, d.day, 15, 0, tzinfo=CST)
+    # 周线: label为该周最新交易日, 属于上周则必然完成; 本周则等周五15:00后
+    if week_id(d) != week_id(now.date()):
+        return True
+    friday = d + timedelta(days=(4 - d.weekday()))
+    return now >= datetime(friday.year, friday.month, friday.day, 15, 0, tzinfo=CST)
+
+
+def period_id(tf, label):
+    """去重键: 周线label随交易日变化, 归一化为 年-周号"""
+    if tf == "week":
+        return week_id(datetime.strptime(label, "%Y-%m-%d").date())
+    return label
+
+
+def fmt_label(tf, label):
+    if tf in TF_MIN and len(label) == 12:
+        return f"{label[4:6]}-{label[6:8]} {label[8:10]}:{label[10:12]}"
+    return label
+
+
+# ---------------- 多周期共振 ----------------
+# 同一标的在多个周期上同向信号叠加(如60分钟金叉+日线底背离+周线金叉),
+# 比单周期信号可靠得多。每周期取回看窗口内"最近一个信号"(交叉或背离)。
+RESONANCE_LOOKBACK = {"1m": 30, "5m": 24, "15m": 16, "30m": 8, "60m": 8, "day": 5, "week": 3}
+TF_ORDER = {tf: i for i, tf in enumerate(("1m", "5m", "15m", "30m", "60m", "day", "week"))}
+
+
+def recent_tf_signals(tf, bars, dif, dea, last_completed):
+    """该周期回看窗口内最近的一个信号(交叉或背离), 无则返回 None。
+    返回 {"dir","word","ago","label"}; ago=距最后一根已收盘K线的根数"""
+    look = RESONANCE_LOOKBACK.get(tf, 8)
+    best = None
+    for i in range(last_completed, max(0, last_completed - look), -1):
+        cross = detect_cross(dif, dea, i)
+        if cross:
+            bull = cross == "golden"
+            best = {"dir": "bull" if bull else "bear",
+                    "word": "金叉" if bull else "死叉",
+                    "ago": last_completed - i, "label": bars[i][0]}
+            break
+    for dv in detect_divergences(bars, dif, last_completed, pairs=3):
+        ago = last_completed - dv["confirm"]
+        if ago < look and (best is None or ago < best["ago"]):
+            bull = dv["div"] == "bull"
+            best = {"dir": "bull" if bull else "bear",
+                    "word": "底背离" if bull else "顶背离",
+                    "ago": ago, "label": bars[dv["confirm"]][0]}
+    return best
+
+
+def combine_resonance(sigs_by_tf):
+    """按方向聚合各周期信号: {"bull": {tf: sig}, "bear": {tf: sig}}"""
+    out = {"bull": {}, "bear": {}}
+    for tf, sig in (sigs_by_tf or {}).items():
+        if sig:
+            out[sig["dir"]][tf] = sig
+    return out
+
+
+def scan_resonance(code, name, group, sigs_by_tf, last_close, state, cfg, now):
+    """检测一只标的的多周期共振, 返回新出现的共振提醒列表。
+    去重: state['resonance'] 记录已提醒过的周期组合, 同一组合只提醒一次;
+    组合升级(双周期→三周期)视为新共振会再次提醒; 周期退出后旧组合失效,
+    之后重新聚齐会再次提醒。"""
+    rcfg = cfg.get("resonance") or {}
+    if rcfg.get("enable") is False:
+        return []
+    min_tfs = int(rcfg.get("min_tfs", 2) or 2)
+    res = combine_resonance(sigs_by_tf)
+    seen = state.setdefault("resonance", {})
+    out = []
+    for d in ("bull", "bear"):
+        cur = set(res[d])
+        prefix = f"{code}|{d}|"
+        # 清理已失效的历史组合(不再是当前周期集合的子集)
+        for k in [k for k in seen if k.startswith(prefix)
+                  and not set(k[len(prefix):].split("+")) <= cur]:
+            seen.pop(k, None)
+        if len(cur) < min_tfs:
+            continue
+        tfs = sorted(cur, key=lambda t: TF_ORDER.get(t, 99))
+        key = prefix + "+".join(tfs)
+        if key in seen:
+            continue
+        seen[key] = now.strftime("%Y-%m-%d %H:%M")
+        out.append({
+            "kind": "resonance", "dir": d, "code": code, "name": name,
+            "group": group, "tfs": tfs,
+            "sigs": {t: res[d][t] for t in tfs},
+            "close": last_close or 0.0,
+            "label": now.strftime("%Y-%m-%d %H:%M"),
+        })
+    while len(seen) > STATE_LIMIT:
+        seen.pop(next(iter(seen)))
+    return out
+
+
+# ---------------- 飞书推送 ----------------
+
+def feishu_sign(secret, ts):
+    s = f"{ts}\n{secret}"
+    return base64.b64encode(hmac.new(s.encode("utf-8"), digestmod=hashlib.sha256).digest()).decode()
+
+
+def sig_word(a):
+    """信号中文名"""
+    if a.get("kind") == "resonance":
+        return "多周期共振"
+    if a.get("kind") == "div":
+        return "底背离" if a["div"] == "bull" else "顶背离"
+    return "金叉" if a["cross"] == "golden" else "死叉"
+
+
+def sig_dir(a):
+    """信号方向: bull 看涨 / bear 看跌"""
+    if a.get("kind") == "resonance":
+        return a["dir"]
+    if a.get("kind") == "div":
+        return a["div"]
+    return "bull" if a["cross"] == "golden" else "bear"
+
+
+def fmt_alert_line(a):
+    if a.get("kind") == "resonance":
+        d = "看涨" if a["dir"] == "bull" else "看跌"
+        det = " ".join(f'{TF_NAME[t]}{a["sigs"][t]["word"]}({a["sigs"][t]["ago"]}根前)'
+                       for t in a["tfs"])
+        return (f'{a["name"]}({a["code"]})[{a["group"]}] 多周期共振[{d}] '
+                f'{"+".join(TF_NAME[t] for t in a["tfs"])} '
+                f'现价{a["close"]:.2f} {det}')
+    if a.get("kind") == "div":
+        bull = a["div"] == "bull"
+        w = "底背离" if bull else "顶背离"
+        if bull:
+            shape = f'价格{a["c1"]:.2f}→{a["c2"]:.2f}创新低 DIF{a["d1"]:.3f}→{a["d2"]:.3f}抬高'
+        else:
+            shape = f'价格{a["c1"]:.2f}→{a["c2"]:.2f}创新高 DIF{a["d1"]:.3f}→{a["d2"]:.3f}降低'
+        return (f'{a["name"]}({a["code"]})[{a["group"]}] {TF_NAME[a["tf"]]} {w} '
+                f'{shape} @{fmt_label(a["tf"], a["label"])}')
+    w = "金叉" if a["cross"] == "golden" else "死叉"
+    flag = " (未收盘确认)" if a.get("forming") else ""
+    return (f'{a["name"]}({a["code"]})[{a["group"]}] {TF_NAME[a["tf"]]} {w} '
+            f'价格{a["close"]:.2f} DIF {a["dif"]:.3f}/DEA {a["dea"]:.3f} '
+            f'@{fmt_label(a["tf"], a["label"])}{flag}')
+
+
+def send_feishu(cfg, alerts):
+    url = str(cfg.get("webhook_url", "")).strip()
+    if not url:
+        for a in alerts:
+            log.info("[未配置webhook,仅控制台] %s", fmt_alert_line(a))
+        return
+    # 飞书卡片上限100KB, 分批发送(每批20条)防止超限
+    for i in range(0, len(alerts), 20):
+        send_feishu_card(cfg, alerts[i:i + 20])
+
+
+def send_feishu_card(cfg, alerts):
+    url = str(cfg.get("webhook_url", "")).strip()
+    # 卡片颜色按方向: 全部看涨绿/全部看跌红/混合蓝; 标题取统一信号类型
+    dirs = {sig_dir(a) for a in alerts}
+    template = "green" if dirs == {"bull"} else ("red" if dirs == {"bear"} else "blue")
+    words = {sig_word(a) for a in alerts}
+    word = words.pop() if len(words) == 1 else "信号"
+    elements = []
+    for a in alerts:
+        if a.get("kind") == "div":
+            bull = a["div"] == "bull"
+            emoji = "🟢" if bull else "🔴"
+            w = "底背离" if bull else "顶背离"
+            tagA, tagB = ("低点A", "低点B") if bull else ("高点A", "高点B")
+            trend = "价格创新低，DIF低点抬高" if bull else "价格创新高，DIF高点降低"
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content":
+                         f'{emoji} **{w}**　**{a["name"]}**（{a["code"]}）[{a["group"]}]\n'
+                         f'周期：{TF_NAME[a["tf"]]}　现价：{a["close"]:.2f}\n'
+                         f'{tagA} {fmt_label(a["tf"], a["p1"])}　价格 {a["c1"]:.2f}　DIF {a["d1"]:.3f}\n'
+                         f'{tagB} {fmt_label(a["tf"], a["p2"])}　价格 {a["c2"]:.2f}　DIF {a["d2"]:.3f}\n'
+                         f'{trend}　确认 @{fmt_label(a["tf"], a["label"])}'},
+            })
+            continue
+        emoji = "🟢" if a["cross"] == "golden" else "🔴"
+        w = "金叉" if a["cross"] == "golden" else "死叉"
+        extra = "　⚠️未收盘确认" if a.get("forming") else ""
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content":
+                     f'{emoji} **{w}**　**{a["name"]}**（{a["code"]}）[{a["group"]}]\n'
+                     f'周期：{TF_NAME[a["tf"]]}　价格：{a["close"]:.2f}\n'
+                     f'DIF {a["dif"]:.3f}　DEA {a["dea"]:.3f}　时间：{fmt_label(a["tf"], a["label"])}{extra}'},
+        })
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {"template": template,
+                       "title": {"tag": "plain_text",
+                                 "content": f"MACD {word}提醒（{len(alerts)}条）"}},
+            "elements": elements,
+        },
+    }
+    _post_card(cfg, payload, len(alerts))
+
+
+def send_feishu_resonance(cfg, alerts):
+    """多周期共振提醒: 独立高优卡片(与常规信号分开发送, 便于置顶关注)"""
+    url = str(cfg.get("webhook_url", "")).strip()
+    if not url:
+        for a in alerts:
+            log.info("[未配置webhook,仅控制台] %s", fmt_alert_line(a))
+        return
+    elements = []
+    for a in alerts:
+        bull = a["dir"] == "bull"
+        emoji = "🚀" if bull else "🧨"
+        det = "\n".join(
+            f'- {TF_NAME[t]}　{a["sigs"][t]["word"]}　'
+            f'{a["sigs"][t]["ago"]}根K线前 @{fmt_label(t, a["sigs"][t]["label"])}'
+            for t in a["tfs"])
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content":
+                     f'{emoji} **{a["name"]}**（{a["code"]}）[{a["group"]}]　'
+                     f'**{len(a["tfs"])}周期{"看涨" if bull else "看跌"}共振**\n'
+                     f'{det}\n现价：{a["close"]:.2f}'},
+        })
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {"template": "green" if sig_dir(alerts[0]) == "bull" else "red",
+                       "title": {"tag": "plain_text",
+                                 "content": f"🔥 MACD 多周期共振提醒（{len(alerts)}条）"}},
+            "elements": elements,
+        },
+    }
+    _post_card(cfg, payload, len(alerts))
+
+
+def _post_card(cfg, payload, n):
+    """卡片统一发送入口: 附加签名并POST, 记录结果日志"""
+    url = str(cfg.get("webhook_url", "")).strip()
+    secret = str(cfg.get("webhook_secret", "")).strip()
+    if secret:
+        ts = str(int(time.time()))
+        payload["timestamp"] = ts
+        payload["sign"] = feishu_sign(secret, ts)
+    try:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        r = S.post(url, data=body,
+                   headers={"Content-Type": "application/json; charset=utf-8"},
+                   timeout=10)
+        res = r.json()
+        if res.get("code") == 0 or res.get("StatusCode") == 0:
+            log.info("飞书推送成功: %d 条信号", n)
+        else:
+            log.error("飞书推送失败: %s", res)
+    except Exception as e:
+        log.error("飞书推送异常: %s", e)
+
+
+def _feishu_safe_text(text):
+    """将飞书文本中的全角标点转为ASCII，避免部分客户端显示为问号。"""
+    replacements = str.maketrans({
+        "：": ":", "（": "(", "）": ")", "【": "[", "】": "]",
+        "、": ", ", "，": ",", "；": ";", "。": ".", "｜": "|",
+        "→": "->", "　": " ", "·": "-", "×": "x", "≥": ">=", "≤": "<=",
+        "↑": "^", "↓": "v", "—": "-", "－": "-", "“": '"', "”": '"', "‘": "'", "’": "'",
+    })
+    return str(text).translate(replacements)
+
+
+def send_feishu_text(cfg, text):
+    """发送纯文本消息到飞书(用于日志/状态同步)"""
+    url = str(cfg.get("webhook_url", "")).strip()
+    if not url:
+        return
+    text = _feishu_safe_text(text)
+    payload = {"msg_type": "text", "content": {"text": text}}
+    secret = str(cfg.get("webhook_secret", "")).strip()
+    if secret:
+        ts = str(int(time.time()))
+        payload["timestamp"] = ts
+        payload["sign"] = feishu_sign(secret, ts)
+    try:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        r = S.post(url, data=body,
+                   headers={"Content-Type": "application/json; charset=utf-8"},
+                   timeout=10)
+        res = r.json()
+        if res.get("code") == 0 or res.get("StatusCode") == 0:
+            log.info("飞书文本已推送: %s", text.splitlines()[0][:40])
+        else:
+            log.error("飞书文本推送失败: %s", res)
+    except Exception as e:
+        log.error("飞书文本推送异常: %s", e)
+
+
+class FeishuLogHandler(logging.Handler):
+    """将指定级别以上的日志实时转发到飞书(默认WARNING, 可通过 feishu_log_level 调整)"""
+    _sending = False
+
+    def emit(self, record):
+        if self._sending:
+            return
+        cfg = load_json(CONFIG_PATH, {})
+        if not str(cfg.get("webhook_url", "")).strip():
+            return
+        level = str(cfg.get("feishu_log_level", "WARNING")).upper()
+        if record.levelno < getattr(logging, level, logging.WARNING):
+            return
+        self._sending = True
+        try:
+            send_feishu_text(cfg, f"[MACD监控] {record.levelname} {record.getMessage()}")
+        finally:
+            self._sending = False
+
+
+# ---------------- 扫描逻辑 ----------------
+
+def is_fresh_signal(tf, label, now):
+    """信号是否值得即时推送: 只推刚完成不久的信号。
+    分钟线: K线收盘距今不超过3个周期(1m→3分钟, 5m→15分钟, 15m→45分钟, 30m→90分钟, 60m→3小时);
+    日线: 当天; 周线: 本周。
+    停机/重启期间错过的历史信号只入库去重、不推送(历史信号无即时意义)。"""
+    if tf in TF_MIN:
+        age = (now - minute_dt(label)).total_seconds()
+        return -60 <= age <= TF_MIN[tf] * 180
+    d = datetime.strptime(label, "%Y-%m-%d").date()
+    if tf == "day":
+        return d == now.date()
+    return week_id(d) == week_id(now.date())
+
+
+def scan(cfg, state, now):
+    """扫描全部股票/周期, 返回值得推送的新信号列表。
+    全部交叉信号入库去重; 但只推送"新鲜"信号(刚完成不久), 历史信号静默入库。"""
+    signals = state["signals"]
+    primed_stocks = state.setdefault("primed_stocks", [])
+    alerts = []
+    skipped = 0  # 入库但不推送的历史信号数
+    for stock in cfg.get("stocks", []):
+        code = norm_code(stock["code"])
+        name = stock.get("name", code)
+        group = stock.get("group", "自选")
+        res_sigs = {}       # 该标的各周期最近信号(多周期共振用)
+        res_close = None    # 现价(优先取日线最后一根收盘)
+        for tf in cfg.get("timeframes", []):
+            bars = fetch_klines(code, tf, MIN_COUNT if tf in TF_MIN else DAYW_COUNT)
+            if len(bars) < MIN_BARS:
+                continue
+            closes = [c for _, c in bars]
+            dif, dea, _ = macd(closes)
+            n = len(bars)
+            forming = not bar_complete(tf, bars[-1][0], now)
+            last_completed = n - 2 if forming else n - 1
+            # 盘中可选: 对正在形成的K线也提示(标记"未收盘确认")
+            check_upto = n - 1 if (forming and cfg.get("signal_on_forming_bar")) else last_completed
+            for i in range(1, check_upto + 1):
+                cross = detect_cross(dif, dea, i)
+                if not cross:
+                    continue
+                key = f"{code}|{tf}|{period_id(tf, bars[i][0])}"
+                if key in signals:
+                    continue
+                signals[key] = cross
+                if not is_fresh_signal(tf, bars[i][0], now):
+                    skipped += 1  # 历史信号: 只入库去重, 不推送
+                    continue
+                alerts.append({
+                    "kind": "cross",
+                    "code": code, "name": name, "group": group, "tf": tf,
+                    "cross": cross, "label": bars[i][0], "close": closes[i],
+                    "dif": dif[i], "dea": dea[i], "forming": i > last_completed,
+                })
+            # ---- 背离检测(只用已收盘K线; 每对DIF极值只报一次) ----
+            for dv in detect_divergences(bars, dif, last_completed):
+                key = (f"{code}|{tf}|div|{period_id(tf, bars[dv['p1']][0])}"
+                       f"|{period_id(tf, bars[dv['p2']][0])}")
+                if key in signals:
+                    continue
+                signals[key] = dv["div"]
+                label = bars[dv["confirm"]][0]  # 第二个极值被确认的K线 = 信号成立时刻
+                if not is_fresh_signal(tf, label, now):
+                    skipped += 1  # 历史背离: 只入库去重, 不推送
+                    continue
+                alerts.append({
+                    "kind": "div", "div": dv["div"],
+                    "code": code, "name": name, "group": group, "tf": tf,
+                    "label": label, "close": closes[dv["confirm"]],
+                    "dif": dif[dv["confirm"]], "dea": dea[dv["confirm"]],
+                    "forming": False,
+                    "p1": bars[dv["p1"]][0], "p2": bars[dv["p2"]][0],
+                    "c1": dv["c1"], "c2": dv["c2"], "d1": dv["d1"], "d2": dv["d2"],
+                })
+            # ---- 共振: 记录该周期回看窗口内的最近信号(复用已拉的bars) ----
+            res_sigs[tf] = recent_tf_signals(tf, bars, dif, dea, last_completed)
+            if closes and (tf == "day" or res_close is None):
+                res_close = closes[-1]
+            time.sleep(0.1)
+        # ---- 多周期共振(该标的全部周期扫完后再判定) ----
+        alerts.extend(scan_resonance(code, name, group, res_sigs,
+                                      res_close, state, cfg, now))
+        if code not in primed_stocks:
+            primed_stocks.append(code)
+    if skipped:
+        log.info("历史信号%d条已入库(不推送, 仅去重)", skipped)
+    # 状态瘦身
+    while len(signals) > STATE_LIMIT:
+        signals.pop(next(iter(signals)))
+    state["primed"] = True
+    state["minute_primed"] = True
+    return alerts
+
+
+def report(cfg):
+    """打印各周期MACD状态与最近60根完成K线内的信号, 不发通知"""
+    now = now_cst()
+    print(f"MACD 状态报告　{now:%Y-%m-%d %H:%M} (北京时间)")
+    print("=" * 78)
+    for stock in cfg.get("stocks", []):
+        code = norm_code(stock["code"])
+        name = stock.get("name", code)
+        group = stock.get("group", "自选")
+        print(f"\n◆ {name} {code} [{group}]")
+        for tf in cfg.get("timeframes", []):
+            bars = fetch_klines(code, tf, MIN_COUNT if tf in TF_MIN else DAYW_COUNT)
+            if len(bars) < MIN_BARS:
+                print(f"  {TF_NAME[tf]:>4}　数据不足")
+                continue
+            closes = [c for _, c in bars]
+            dif, dea, hist = macd(closes)
+            i = len(bars) - 1
+            forming = not bar_complete(tf, bars[i][0], now)
+            last_completed = i - 1 if forming else i
+            recent = None
+            for j in range(last_completed, 0, -1):
+                c = detect_cross(dif, dea, j)
+                if c:
+                    recent = (c, bars[j][0], last_completed - j)
+                    break
+            gap = dif[i] - dea[i]
+            trend = "多头" if gap > 0 else "空头"
+            status = "形成中" if forming else "已收盘"
+            print(f"  {TF_NAME[tf]:>4}　DIF {dif[i]:>9.3f}　DEA {dea[i]:>9.3f}　"
+                  f"柱 {hist[i]:>9.3f}　{trend}　[{status}]")
+            if recent:
+                c, lb, ago = recent
+                w = "🟢金叉" if c == "golden" else "🔴死叉"
+                print(f"  　　　└ 最近信号: {w} @ {fmt_label(tf, lb)} ({ago}根K线前)")
+            for dv in detect_divergences(bars, dif, last_completed, pairs=2):
+                w = "🟢底背离" if dv["div"] == "bull" else "🔴顶背离"
+                print(f"  　　　└ 最近背离: {w} {fmt_label(tf, bars[dv['p1']][0])} → "
+                      f"{fmt_label(tf, bars[dv['p2']][0])}　"
+                      f"价格 {dv['c1']:.2f}→{dv['c2']:.2f}　DIF {dv['d1']:.3f}→{dv['d2']:.3f}")
+            time.sleep(0.1)
+    print("\n(柱=DIF-DEA的2倍; 距离0越近越接近交叉)")
+
+
+# ---------------- 主流程 ----------------
+
+def main():
+    ap = argparse.ArgumentParser(description="MACD金叉/死叉/背离监控 + 飞书提醒")
+    ap.add_argument("--report", action="store_true", help="查看MACD状态报告, 不发通知")
+    ap.add_argument("--once", action="store_true", help="扫描一轮后退出(测试用)")
+    args = ap.parse_args()
+
+    cfg = load_json(CONFIG_PATH, {})
+    if not cfg.get("stocks"):
+        log.error("config.json 中没有股票, 请先配置")
+        return
+
+    if args.report:
+        report(cfg)
+        return
+
+    state = load_json(STATE_PATH, {"signals": {}, "primed": False})
+    if "signals" not in state:
+        state["signals"] = {}
+
+    if args.once:
+        alerts = scan(cfg, state, now_cst())
+        save_json(STATE_PATH, state)
+        if alerts:
+            for a in alerts:
+                print(fmt_alert_line(a))
+            res_alerts = [a for a in alerts if a.get("kind") == "resonance"]
+            plain = [a for a in alerts if a.get("kind") != "resonance"]
+            if plain:
+                send_feishu(cfg, plain)
+            if res_alerts:
+                send_feishu_resonance(cfg, res_alerts)
+        else:
+            print("无新信号")
+        return
+
+    log.info("启动MACD监控: %d只股票 × %d个周期 %s",
+             len(cfg["stocks"]), len(cfg.get("timeframes", [])),
+             cfg.get("timeframes"))
+    # 日志实时同步到飞书(WARNING及以上), 心跳状态定时推送
+    log.addHandler(FeishuLogHandler())
+    send_feishu_text(cfg, f"✅ MACD监控已启动\n"
+                          f"标的: {len(cfg['stocks'])}只 × {len(cfg.get('timeframes', []))}周期\n"
+                          f"信号: 金叉/死叉 + 底背离/顶背离\n"
+                          f"周期: {'/'.join(cfg.get('timeframes', []))}\n"
+                          f"通知策略: 交易时段即时推送信号; 非交易时段/非交易日静默")
+    start_ts = time.time()
+    last_hb = time.time()
+    last_round = "尚未扫描"
+    while True:
+        now = now_cst()
+        trading = is_trading_time(now)
+        try:
+            # 每轮热加载配置, Web UI 增删股票后无需重启即可生效
+            cfg = load_json(CONFIG_PATH, cfg)
+            if cfg.get("stocks"):
+                t0 = time.time()
+                alerts = scan(cfg, state, now)
+                if alerts:
+                    for a in alerts:
+                        log.info("信号: %s", fmt_alert_line(a))
+                    if trading:
+                        # 交易时段: 即时推送(共振走独立高优卡片, 常规信号走普通卡片)
+                        res_alerts = [a for a in alerts if a.get("kind") == "resonance"]
+                        plain = [a for a in alerts if a.get("kind") != "resonance"]
+                        if plain:
+                            send_feishu(cfg, plain)
+                        if res_alerts:
+                            send_feishu_resonance(cfg, res_alerts)
+                    else:
+                        # 非交易时段/非交易日: 信号仅入库记录, 不推送
+                        log.info("非交易时段, %d条信号仅记录不推送", len(alerts))
+                save_json(STATE_PATH, state)
+                last_round = (f"{now_cst():%H:%M:%S} 新信号{len(alerts)}条 "
+                              f"耗时{time.time() - t0:.1f}s")
+                log.info("本轮扫描完成: %s", last_round)
+            # 心跳状态摘要(默认每30分钟, feishu_status_interval_min 可调, 0=关闭)
+            # 仅交易时段推送心跳; 非交易时段/非交易日完全静默
+            hb_min = cfg.get("feishu_status_interval_min", 30)
+            if hb_min and trading and time.time() - last_hb >= float(hb_min) * 60:
+                last_hb = time.time()
+                mins = int((time.time() - start_ts) // 60)
+                send_feishu_text(cfg,
+                                 f"📊 MACD监控状态\n"
+                                 f"时间: {now_cst():%Y-%m-%d %H:%M} (北京时间)\n"
+                                 f"状态: 运行中 (已运行 {mins // 60}小时{mins % 60}分)\n"
+                                 f"标的: {len(cfg.get('stocks', []))}只\n"
+                                 f"最后一轮: {last_round}\n"
+                                 f"当前: 交易时段({cfg.get('poll_interval_sec', 30)}秒轮询)")
+            # 每轮结束写心跳文件, webui /api/health 据此判断监控进程是否存活
+            # (扫描抛异常时不写 -> 心跳变旧 -> 前端告警"疑似停止")
+            try:
+                with open(os.path.join(BASE, "monitor_heartbeat"), "w",
+                          encoding="utf-8") as f:
+                    f.write(now_cst().isoformat())
+            except Exception:
+                pass
+        except Exception:
+            log.exception("扫描异常")
+        interval = cfg.get("poll_interval_sec", 30) if is_trading_time(now_cst()) else 300
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    main()
