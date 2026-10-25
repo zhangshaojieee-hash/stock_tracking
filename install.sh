@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/huigezhi/stock_tracking.git"
+REPO_URL="https://github.com/zhangshaojieee-hash/stock_tracking.git"
 APP_DIR="$HOME/macd-monitor"
 
 info()  { echo -e "\033[32m[安装]\033[0m $*"; }

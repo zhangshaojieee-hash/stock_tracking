@@ -1,6 +1,6 @@
 # MACD 监控一键卸载 (Windows PowerShell)
 # 一行命令运行(复制到 PowerShell):
-#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/huigezhi/stock_tracking/main/uninstall.ps1 | iex"
+#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/zhangshaojieee-hash/stock_tracking/main/uninstall.ps1 | iex"
 
 $ErrorActionPreference = "Continue"
 $AppDir = Join-Path $env:USERPROFILE "macd-monitor"

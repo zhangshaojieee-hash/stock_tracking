@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # MACD 监控一键卸载脚本 (适用于 Ubuntu/Debian/CentOS 等 Linux)
 # 用法:
-#   curl -fsSL https://raw.githubusercontent.com/huigezhi/stock_tracking/main/uninstall.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/zhangshaojieee-hash/stock_tracking/main/uninstall.sh | bash
 # 或克隆仓库后: bash uninstall.sh
 # 可选参数:
 #   bash uninstall.sh /opt/macd-monitor   # 指定安装目录(默认自动探测)

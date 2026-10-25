@@ -1,9 +1,9 @@
 ﻿# MACD 监控 Windows 一键安装 (PowerShell)
 # 一行命令运行(复制到 PowerShell / cmd / "运行"窗口):
-#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/huigezhi/stock_tracking/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/zhangshaojieee-hash/stock_tracking/main/install.ps1 | iex"
 
 $ErrorActionPreference = "Stop"
-$RepoUrl = "https://github.com/huigezhi/stock_tracking.git"
+$RepoUrl = "https://github.com/zhangshaojieee-hash/stock_tracking.git"
 $AppDir = Join-Path $env:USERPROFILE "macd-monitor"
 
 Write-Host "=============================================================="

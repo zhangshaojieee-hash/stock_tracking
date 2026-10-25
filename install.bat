@@ -6,7 +6,7 @@ setlocal enabledelayedexpansion
 :: 用法: 双击运行 或 在 cmd 中执行 install.bat
 :: 包含: 安装依赖 -> 克隆代码 -> 初始化配置 -> 验证
 
-set "REPO_URL=https://github.com/huigezhi/stock_tracking.git"
+set "REPO_URL=https://github.com/zhangshaojieee-hash/stock_tracking.git"
 set "APP_DIR=%USERPROFILE%\macd-monitor"
 
 echo ==============================================================

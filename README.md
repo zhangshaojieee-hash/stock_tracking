@@ -1,6 +1,6 @@
 # MACD金叉、死叉、背离自动监控&飞书通知
 
-> This private fork is based on [huigezhi/stock_tracking](https://github.com/huigezhi/stock_tracking) and is distributed with the upstream Apache License 2.0. See [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for attribution and local modification notes.
+> This fork is based on [huigezhi/stock_tracking](https://github.com/huigezhi/stock_tracking) and is distributed with the upstream Apache License 2.0. See [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for attribution and local modification notes.
 
 MACD 金叉/死叉 + 底背离/顶背离监控 + 飞书机器人提醒 + 自选管理 Web UI，数据源为腾讯行情接口，纯 Python 实现，适合部署在 VPS 上长期运行。
 
@@ -200,6 +200,10 @@ MA5/10/20/60 均线、MACD 副图（DIF/DEA/柱，与主图窗口联动缩放）
 
 * 明暗主题切换（跟随系统 / 白天 / 夜间），响应式布局
 
+## 同事部署
+
+两种部署方式、完整本地交付包恢复步骤、公开仓库安全注意事项和许可证说明，请阅读 [DEPLOYMENT.md](DEPLOYMENT.md)。
+
 ## 一键安装
 
 复制对应系统的一行命令到终端运行，从克隆代码到验证完成全自动，无需手动 clone：
@@ -207,7 +211,7 @@ MA5/10/20/60 均线、MACD 副图（DIF/DEA/柱，与主图窗口联动缩放）
 ### Windows（PowerShell，推荐）
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/huigezhi/stock_tracking/main/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/zhangshaojieee-hash/stock_tracking/main/install.ps1 | iex"
 ```
 
 命令直接从网络执行，不在本地留下安装脚本。也可以 [下载 install.ps1](install.ps1) 后执行，或使用 [install.bat](install.bat)（双击运行）。
@@ -215,7 +219,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/hui
 ### Windows（cmd）
 
 ```bat
-curl -fsSL -o %TEMP%\install.bat https://raw.githubusercontent.com/huigezhi/stock_tracking/main/install.bat && %TEMP%\install.bat
+curl -fsSL -o %TEMP%\install.bat https://raw.githubusercontent.com/zhangshaojieee-hash/stock_tracking/main/install.bat && %TEMP%\install.bat
 ```
 
 本项目的 Windows 本地启动脚本为 `启动MACD网站.bat`。脚本生成 Cloudflare 手机动态网址后，会读取 `macd-monitor/config.json`，向已配置的飞书群机器人发送一条启动消息，内容包括手机网址和 `webui.auth_token`。如果网址生成失败、Webhook 未配置或发送失败，不会阻止网站启动；动态网址在重启后可能变化。
@@ -225,7 +229,7 @@ curl -fsSL -o %TEMP%\install.bat https://raw.githubusercontent.com/huigezhi/stoc
 ### Ubuntu / Debian
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/huigezhi/stock_tracking/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/zhangshaojieee-hash/stock_tracking/main/install.sh)
 ```
 
 ### 前置要求
@@ -255,13 +259,13 @@ python3 webui.py       # 启动 Web UI, 浏览器打开 http://localhost:8688
 ### Windows（PowerShell）
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/huigezhi/stock_tracking/main/uninstall.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/zhangshaojieee-hash/stock_tracking/main/uninstall.ps1 | iex"
 ```
 
 ### Ubuntu / Debian（本地安装版）
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/huigezhi/stock_tracking/main/uninstall.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/zhangshaojieee-hash/stock_tracking/main/uninstall.sh)
 ```
 
 ### VPS 服务器版（含 systemd 服务）
