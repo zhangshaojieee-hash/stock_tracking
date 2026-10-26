@@ -450,108 +450,58 @@ def send_feishu(cfg, alerts):
 
 
 def send_feishu_card(cfg, alerts):
-    url = str(cfg.get("webhook_url", "")).strip()
     # 卡片颜色按方向: 全部看涨绿/全部看跌红/混合蓝; 标题取统一信号类型
     dirs = {sig_dir(a) for a in alerts}
     template = "green" if dirs == {"bull"} else ("red" if dirs == {"bear"} else "blue")
     words = {sig_word(a) for a in alerts}
     word = words.pop() if len(words) == 1 else "信号"
-    elements = []
+    sections = []
     for a in alerts:
         if a.get("kind") == "div":
             bull = a["div"] == "bull"
             emoji = "🟢" if bull else "🔴"
             w = "底背离" if bull else "顶背离"
             tagA, tagB = ("低点A", "低点B") if bull else ("高点A", "高点B")
-            trend = "价格创新低，DIF低点抬高" if bull else "价格创新高，DIF高点降低"
-            elements.append({
-                "tag": "div",
-                "text": {"tag": "lark_md", "content":
-                         f'{emoji} **{w}**　**{a["name"]}**（{a["code"]}）[{a["group"]}]\n'
-                         f'周期：{TF_NAME[a["tf"]]}　现价：{a["close"]:.2f}\n'
-                         f'{tagA} {fmt_label(a["tf"], a["p1"])}　价格 {a["c1"]:.2f}　DIF {a["d1"]:.3f}\n'
-                         f'{tagB} {fmt_label(a["tf"], a["p2"])}　价格 {a["c2"]:.2f}　DIF {a["d2"]:.3f}\n'
-                         f'{trend}　确认 @{fmt_label(a["tf"], a["label"])}'},
-            })
+            trend = "价格创新低, DIF低点抬高" if bull else "价格创新高, DIF高点降低"
+            sections.append(
+                f'{emoji} **{w} | {a["name"]}** ({a["code"]}) [{a["group"]}]\n'
+                f'周期: **{TF_NAME[a["tf"]]}**    现价: **{a["close"]:.2f}**\n'
+                f'{tagA}: {fmt_label(a["tf"], a["p1"])}    价格 {a["c1"]:.2f}    DIF {a["d1"]:.3f}\n'
+                f'{tagB}: {fmt_label(a["tf"], a["p2"])}    价格 {a["c2"]:.2f}    DIF {a["d2"]:.3f}\n'
+                f'结论: {trend}\n确认: {fmt_label(a["tf"], a["label"])}')
             continue
         emoji = "🟢" if a["cross"] == "golden" else "🔴"
         w = "金叉" if a["cross"] == "golden" else "死叉"
-        extra = "　⚠️未收盘确认" if a.get("forming") else ""
-        elements.append({
-            "tag": "div",
-            "text": {"tag": "lark_md", "content":
-                     f'{emoji} **{w}**　**{a["name"]}**（{a["code"]}）[{a["group"]}]\n'
-                     f'周期：{TF_NAME[a["tf"]]}　价格：{a["close"]:.2f}\n'
-                     f'DIF {a["dif"]:.3f}　DEA {a["dea"]:.3f}　时间：{fmt_label(a["tf"], a["label"])}{extra}'},
-        })
-    payload = {
-        "msg_type": "interactive",
-        "card": {
-            "config": {"wide_screen_mode": True},
-            "header": {"template": template,
-                       "title": {"tag": "plain_text",
-                                 "content": f"MACD {word}提醒（{len(alerts)}条）"}},
-            "elements": elements,
-        },
-    }
-    _post_card(cfg, payload, len(alerts))
+        extra = "\n⚠️ 状态: 未收盘确认" if a.get("forming") else ""
+        sections.append(
+            f'{emoji} **{w} | {a["name"]}** ({a["code"]}) [{a["group"]}]\n'
+            f'周期: **{TF_NAME[a["tf"]]}**    价格: **{a["close"]:.2f}**\n'
+            f'DIF: {a["dif"]:.3f}    DEA: {a["dea"]:.3f}\n'
+            f'时间: {fmt_label(a["tf"], a["label"])}{extra}')
+    _send_feishu_card_message(cfg, f"MACD {word}提醒 ({len(alerts)}条)",
+                              template=template, label=f"{word} {len(alerts)}条",
+                              sections=sections)
 
 
 def send_feishu_resonance(cfg, alerts):
-    """多周期共振提醒: 独立高优卡片(与常规信号分开发送, 便于置顶关注)"""
-    url = str(cfg.get("webhook_url", "")).strip()
-    if not url:
-        for a in alerts:
-            log.info("[未配置webhook,仅控制台] %s", fmt_alert_line(a))
-        return
-    elements = []
+    """多周期共振提醒: 用独立分段卡片突出高优先级信号。"""
+    sections = []
     for a in alerts:
         bull = a["dir"] == "bull"
         emoji = "🚀" if bull else "🧨"
         det = "\n".join(
-            f'- {TF_NAME[t]}　{a["sigs"][t]["word"]}　'
-            f'{a["sigs"][t]["ago"]}根K线前 @{fmt_label(t, a["sigs"][t]["label"])}'
+            f'- {TF_NAME[t]}: {a["sigs"][t]["word"]} '
+            f'({a["sigs"][t]["ago"]}根前, {fmt_label(t, a["sigs"][t]["label"])})'
             for t in a["tfs"])
-        elements.append({
-            "tag": "div",
-            "text": {"tag": "lark_md", "content":
-                     f'{emoji} **{a["name"]}**（{a["code"]}）[{a["group"]}]　'
-                     f'**{len(a["tfs"])}周期{"看涨" if bull else "看跌"}共振**\n'
-                     f'{det}\n现价：{a["close"]:.2f}'},
-        })
-    payload = {
-        "msg_type": "interactive",
-        "card": {
-            "config": {"wide_screen_mode": True},
-            "header": {"template": "green" if sig_dir(alerts[0]) == "bull" else "red",
-                       "title": {"tag": "plain_text",
-                                 "content": f"🔥 MACD 多周期共振提醒（{len(alerts)}条）"}},
-            "elements": elements,
-        },
-    }
-    _post_card(cfg, payload, len(alerts))
-
-
-def _post_card(cfg, payload, n):
-    """卡片统一发送入口: 附加签名并POST, 记录结果日志"""
-    url = str(cfg.get("webhook_url", "")).strip()
-    secret = str(cfg.get("webhook_secret", "")).strip()
-    if secret:
-        ts = str(int(time.time()))
-        payload["timestamp"] = ts
-        payload["sign"] = feishu_sign(secret, ts)
-    try:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        r = S.post(url, data=body,
-                   headers={"Content-Type": "application/json; charset=utf-8"},
-                   timeout=10)
-        res = r.json()
-        if res.get("code") == 0 or res.get("StatusCode") == 0:
-            log.info("飞书推送成功: %d 条信号", n)
-        else:
-            log.error("飞书推送失败: %s", res)
-    except Exception as e:
-        log.error("飞书推送异常: %s", e)
+        sections.append(
+            f'{emoji} **{a["name"]}** ({a["code"]}) [{a["group"]}]\n'
+            f'**{len(a["tfs"])}周期{"看涨" if bull else "看跌"}共振**\n'
+            f'{det}\n'
+            f'现价: **{a["close"]:.2f}**')
+    template = "green" if sig_dir(alerts[0]) == "bull" else "red"
+    _send_feishu_card_message(cfg, f"MACD 多周期共振提醒 ({len(alerts)}条)",
+                              template=template, label=f"多周期共振 {len(alerts)}条",
+                              sections=sections)
 
 
 def _feishu_safe_text(text):
@@ -565,13 +515,19 @@ def _feishu_safe_text(text):
     return str(text).translate(replacements)
 
 
-def send_feishu_text(cfg, text):
-    """发送纯文本消息到飞书(用于日志/状态同步)"""
+def _card_text(text, limit=1800):
+    """将普通文本整理为卡片段落, 保留换行并限制单段长度。"""
+    text = _feishu_safe_text(text).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit - 16].rstrip() + "\n...内容已截断"
+
+
+def _send_feishu_payload(cfg, payload, label):
+    """统一发送飞书卡片, 由所有通知入口复用。"""
     url = str(cfg.get("webhook_url", "")).strip()
     if not url:
-        return
-    text = _feishu_safe_text(text)
-    payload = {"msg_type": "text", "content": {"text": text}}
+        return False
     secret = str(cfg.get("webhook_secret", "")).strip()
     if secret:
         ts = str(int(time.time()))
@@ -584,11 +540,76 @@ def send_feishu_text(cfg, text):
                    timeout=10)
         res = r.json()
         if res.get("code") == 0 or res.get("StatusCode") == 0:
-            log.info("飞书文本已推送: %s", text.splitlines()[0][:40])
-        else:
-            log.error("飞书文本推送失败: %s", res)
+            log.info("飞书卡片已推送: %s", label)
+            return True
+        log.error("飞书卡片推送失败: %s", res)
     except Exception as e:
-        log.error("飞书文本推送异常: %s", e)
+        log.error("飞书卡片推送异常: %s", e)
+    return False
+
+
+def _send_feishu_card_message(cfg, title, text=None, template="blue", label=None, sections=None):
+    """发送统一样式的分段卡片消息。"""
+    if sections is None:
+        sections = [text or ""]
+    clean_sections = []
+    for section in sections:
+        section = _card_text(section).strip()
+        if section:
+            clean_sections.append(section)
+    if not clean_sections:
+        clean_sections = ["-"]
+    elements = []
+    for i, section in enumerate(clean_sections):
+        if i:
+            elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": section}})
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {"template": template,
+                       "title": {"tag": "plain_text", "content": title[:40]}},
+            "elements": elements,
+        },
+    }
+    return _send_feishu_payload(cfg, payload, label or title)
+
+
+def send_feishu_text(cfg, text):
+    """兼容旧调用名, 实际统一发送为分段飞书卡片。"""
+    text = _feishu_safe_text(text).strip()
+    if not text:
+        return
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    lines = text.splitlines()
+    first = lines[0].strip() if lines else "MACD通知"
+    if "MACD监控" in first and ("ERROR" in first or "WARNING" in first or "错误" in first):
+        title = "⚠️ MACD监控告警"
+    elif "已启动" in first or "started" in first.lower():
+        title = "✅ MACD监控已启动"
+    elif "状态" in first or "status" in first.lower():
+        title = "📊 MACD监控状态"
+    elif "自选股买卖点候选" in first:
+        title = "MACD 自选股买卖点候选"
+    elif first.startswith("[MACD监控]"):
+        title = "⚠️ MACD监控日志"
+    else:
+        title = first[:40]
+    if len(paragraphs) > 1:
+        sections = paragraphs[1:] if paragraphs[0] == first else paragraphs
+    else:
+        sections = ["\n".join(lines[1:]).strip() or text]
+    template = "red" if any(word in text for word in ("ERROR", "错误", "失败", "死叉", "卖点", "风险")) else "blue"
+    # 每张卡最多放8个段落, 买卖点候选过多时拆卡, 保持手机端可读性。
+    batch_size = 8
+    total = max(1, (len(sections) + batch_size - 1) // batch_size)
+    for offset in range(0, len(sections), batch_size):
+        batch = sections[offset:offset + batch_size]
+        index = offset // batch_size + 1
+        batch_title = f"{title} ({index}/{total})" if total > 1 else title
+        _send_feishu_card_message(cfg, batch_title, template=template,
+                                  label=batch_title, sections=batch)
 
 
 class FeishuLogHandler(logging.Handler):

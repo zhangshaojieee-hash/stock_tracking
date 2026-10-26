@@ -29,6 +29,17 @@ function Get-ProjectProcess([string]$Pattern) {
         Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like "*$Pattern*" }
 }
 
+function Restart-ProjectProcesses {
+    foreach ($pattern in @('webui.py', 'monitor.py')) {
+        $processes = @(Get-ProjectProcess $pattern)
+        foreach ($process in $processes) {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+            Write-Host "Stopped old process: $pattern (PID $($process.ProcessId))"
+        }
+    }
+    Start-Sleep -Milliseconds 500
+}
+
 function Start-ProjectProcess([string]$Pattern, [string]$Arguments, [string]$OutFile, [string]$ErrFile) {
     if (Get-ProjectProcess $Pattern) {
         Write-Host "Already running: $Pattern"
@@ -121,10 +132,22 @@ function Send-FeishuStartupNotification([string]$PhoneUrl, [string]$AuthToken, $
 
     $startedAt = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $tokenText = if ([string]::IsNullOrWhiteSpace($AuthToken)) { 'not configured' } else { $AuthToken }
-    $text = "MACD monitor started`nTime: $startedAt`nPhone URL: $PhoneUrl`nAccess token: $tokenText`nNote: the temporary URL may change after restart"
     $payload = @{
-        msg_type = 'text'
-        content = @{ text = $text }
+        msg_type = 'interactive'
+        card = @{
+            config = @{ wide_screen_mode = $true }
+            header = @{
+                template = 'blue'
+                title = @{ tag = 'plain_text'; content = 'MACD Monitor Started' }
+            }
+            elements = @(
+                @{ tag = 'div'; text = @{ tag = 'lark_md'; content = "**Phone URL**`n$PhoneUrl" } }
+                @{ tag = 'hr' }
+                @{ tag = 'div'; text = @{ tag = 'lark_md'; content = "**Access token**`n$tokenText" } }
+                @{ tag = 'hr' }
+                @{ tag = 'div'; text = @{ tag = 'lark_md'; content = "Started: $startedAt`nThe temporary URL may change after restart." } }
+            )
+        }
     }
 
     $hmac = $null
@@ -198,6 +221,7 @@ if (@($config.stocks).Count -eq 0) {
 $authToken = [string]$config.webui.auth_token
 
 Ensure-RssHub
+Restart-ProjectProcesses
 
 if (Test-WebUiRunning) {
     Write-Host 'Already running: webui.py'

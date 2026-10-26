@@ -222,7 +222,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/zha
 curl -fsSL -o %TEMP%\install.bat https://raw.githubusercontent.com/zhangshaojieee-hash/stock_tracking/main/install.bat && %TEMP%\install.bat
 ```
 
-本项目的 Windows 本地启动脚本为 `启动MACD网站.bat`。脚本生成 Cloudflare 手机动态网址后，会读取 `macd-monitor/config.json`，向已配置的飞书群机器人发送一条启动消息，内容包括手机网址和 `webui.auth_token`。如果网址生成失败、Webhook 未配置或发送失败，不会阻止网站启动；动态网址在重启后可能变化。
+本项目的 Windows 本地启动脚本为 `启动MACD网站.bat`。脚本生成 Cloudflare 手机动态网址后，会读取 `macd-monitor/config.json`，向已配置的飞书群机器人发送一条启动卡片，内容包括手机网址和 `webui.auth_token`。监控、共振、状态、日志和自选股买卖点候选通知也统一使用分段卡片；启动时会重启本项目旧的 `webui.py` / `monitor.py` 进程，确保源码更新立即生效。如果网址生成失败、Webhook 未配置或发送失败，不会阻止网站启动；动态网址在重启后可能变化。
 
 访问令牌属于敏感信息，只有在确认群成员都可以访问网站时才建议发送到群里。
 
