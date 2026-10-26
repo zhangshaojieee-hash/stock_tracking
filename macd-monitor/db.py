@@ -960,6 +960,114 @@ def _agg(c, where, params):
     return out
 
 
+def historical_div_backtest(snapshot_id, lag=4, horizons=(1, 3, 5, 10)):
+    """回测一个历史底背离快照, 收益从确认日收盘价起算。
+
+    只使用扫描缓存中确认日之后的已收盘K线; 未走满某个周期的样本
+    保留在样本总数中, 但不进入该周期的胜率/均收益分母。
+    """
+    try:
+        snapshot_id = int(snapshot_id)
+    except (TypeError, ValueError):
+        return {"snapshot": None, "lag": 4, "horizons": list(horizons),
+                "overall": {}, "by_score": [], "by_tf": [], "sample_count": 0}
+    lag = int(lag) if str(lag).isdigit() else 4
+    lag = lag if lag in (2, 3, 4) else 4
+    horizons = tuple(sorted({int(n) for n in horizons if int(n) > 0}))
+    if not horizons:
+        horizons = (1, 3, 5, 10)
+    with conn() as c:
+        meta = c.execute(
+            "SELECT id, scan_date, captured_at, data_asof, row_count "
+            "FROM div_snapshot WHERE id=?", (snapshot_id,)).fetchone()
+        if not meta:
+            return {"snapshot": None, "lag": lag, "horizons": list(horizons),
+                    "overall": {}, "by_score": [], "by_tf": [], "sample_count": 0}
+        if lag == 4:
+            rows = c.execute(
+                "SELECT row_json FROM div_snapshot_row WHERE snapshot_id=?",
+                (snapshot_id,)).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT row_json FROM div_snapshot_lag_row "
+                "WHERE snapshot_id=? AND lag=?", (snapshot_id, lag)).fetchall()
+
+        samples = []
+        max_horizon = max(horizons)
+        for raw in rows:
+            try:
+                item = json.loads(raw[0])
+            except (TypeError, ValueError):
+                continue
+            code = str(item.get("code") or "")
+            tf = str(item.get("tf") or "")
+            confirm = str(item.get("confirm") or "")[:10]
+            if not code or not tf or not confirm:
+                continue
+            base = item.get("confirm_close")
+            try:
+                base = float(base) if base is not None else None
+            except (TypeError, ValueError):
+                base = None
+            bars = c.execute(
+                "SELECT label,c FROM kline_scan_cache "
+                "WHERE code=? AND tf=? AND label>=? "
+                "ORDER BY label LIMIT ?", (code, tf, confirm, max_horizon + 1)
+            ).fetchall()
+            if base is None:
+                for label, close in bars:
+                    if str(label)[:10] == confirm:
+                        try:
+                            base = float(close)
+                        except (TypeError, ValueError):
+                            base = None
+                        break
+            if base is None or base == 0:
+                continue
+            future = []
+            for label, close in bars:
+                if str(label)[:10] > confirm:
+                    try:
+                        future.append(float(close))
+                    except (TypeError, ValueError):
+                        continue
+                if len(future) >= max_horizon:
+                    break
+            returns = {}
+            for n in horizons:
+                returns[str(n)] = (round((future[n - 1] / base - 1) * 100, 2)
+                                   if len(future) >= n else None)
+            samples.append({"code": code, "tf": tf,
+                            "score": item.get("score"), "returns": returns})
+
+    def aggregate(items):
+        out = {"samples": len(items)}
+        for n in horizons:
+            vals = [x["returns"].get(str(n)) for x in items
+                    if x["returns"].get(str(n)) is not None]
+            out[f"n{n}"] = len(vals)
+            out[f"win{n}"] = (round(sum(v > 0 for v in vals) / len(vals) * 100, 1)
+                               if vals else None)
+            out[f"avg{n}"] = (round(sum(vals) / len(vals), 2) if vals else None)
+        return out
+
+    score_groups = ((0, 2), (3, 4), (5, 9))
+    by_score = []
+    for lo, hi in score_groups:
+        items = [x for x in samples
+                 if x["score"] is not None and lo <= float(x["score"]) <= hi]
+        by_score.append({"key": f"{lo}-{hi}", "name": f"共振分{lo}-{hi}",
+                         **aggregate(items)})
+    by_tf = []
+    for tf, name in (("day", "日线"), ("week", "周线")):
+        items = [x for x in samples if x["tf"] == tf]
+        if items:
+            by_tf.append({"key": tf, "name": name, **aggregate(items)})
+    return {"snapshot": dict(meta), "lag": lag, "horizons": list(horizons),
+            "sample_count": len(samples), "overall": aggregate(samples),
+            "by_score": by_score, "by_tf": by_tf}
+
+
 def stats():
     """复盘统计: 总览 + 按周期/共振分/月份分层"""
     with conn() as c:

@@ -2916,6 +2916,32 @@ class Handler(BaseHTTPRequestHandler):
                         "sell_enabled": bool(cfg.get("sell_alert_enabled", True)),
                         "timeframes": _intraday_timeframes(cfg),
                         "timeframe_options": list(INTRADAY_TF_OPTIONS)})
+        elif u.path == "/api/divergence-backtest":
+            q = parse_qs(u.query)
+            try:
+                snapshot_id = int(q.get("snapshot_id", [""])[0])
+            except (TypeError, ValueError):
+                snapshot_id = 0
+            lag_arg = str(q.get("lag", ["all"])[0]).lower()
+            raw_horizons = q.get("horizons", ["1,3,5,10"])[0]
+            try:
+                horizons = tuple(int(x) for x in raw_horizons.split(",") if x.strip())
+            except ValueError:
+                horizons = (1, 3, 5, 10)
+            if lag_arg == "all":
+                by_lag = {
+                    str(lag): db.historical_div_backtest(
+                        snapshot_id, lag, horizons)
+                    for lag in (2, 3, 4)
+                }
+                self._json({"snapshot_id": snapshot_id, "lag": "all",
+                            "horizons": list(horizons), "by_lag": by_lag})
+            else:
+                try:
+                    lag = int(lag_arg)
+                except ValueError:
+                    lag = 4
+                self._json(db.historical_div_backtest(snapshot_id, lag, horizons))
         elif u.path == "/api/stats":
             # 复盘统计: 总览 + 周期/共振分/确认月份分层
             st = db.stats()

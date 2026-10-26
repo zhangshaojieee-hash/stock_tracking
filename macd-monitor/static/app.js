@@ -2044,6 +2044,98 @@ function changeDivSnapshot() {
   loadDivs(divSnapshotId);
 }
 
+function openDivBacktest() {
+  const box = document.getElementById('divBacktestBox');
+  const sel = document.getElementById('backtestSnapshot');
+  if (!box || !sel) return;
+  const visible = divSnapshots.filter(s => s.trigger === 'auto' || s.trigger === 'manual');
+  sel.innerHTML = visible.length ? visible.map(s => {
+    const stamp = new Date(s.captured_at * 1000).toLocaleString('zh-CN',
+      {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false});
+    return `<option value="${s.id}">${esc(`${s.scan_date || '--'} · ${stamp} · ${s.row_count || 0}条`)}</option>`;
+  }).join('') : '<option value="">暂无历史扫描快照</option>';
+  if (divSnapshotId && visible.some(s => String(s.id) === String(divSnapshotId))) {
+    sel.value = divSnapshotId;
+  }
+  box.style.display = 'flex';
+  runDivBacktest();
+}
+
+function closeDivBacktest() {
+  const box = document.getElementById('divBacktestBox');
+  if (box) box.style.display = 'none';
+}
+
+function backtestMetric(value, suffix = '%') {
+  if (value == null) return '--';
+  const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+  return `<span class="${cls}">${value > 0 ? '+' : ''}${value}${suffix}</span>`;
+}
+
+function renderBacktestAggregate(a, horizons) {
+  const cells = horizons.map(n => `
+    <div class="sc-cell">
+      <div class="sc-n">确认后${n}日</div>
+      <div class="sc-win">${a[`win${n}`] == null ? '--' : a[`win${n}`] + '%'}</div>
+      <div class="sc-avg">均收益 ${backtestMetric(a[`avg${n}`])}</div>
+      <div class="sc-cnt">${a[`n${n}`] || 0}个成熟样本 / ${a.samples || 0}个信号</div>
+    </div>`).join('');
+  return `<div class="sc-cells backtest-cells">${cells}</div>`;
+}
+
+function renderBacktestTable(title, groups, horizons) {
+  if (!groups || !groups.length) return '';
+  const head = horizons.map(n => `<th>${n}日胜率</th><th>${n}日均收</th>`).join('');
+  const body = groups.map(g => `<tr><td>${esc(g.name)}</td><td>${g.samples || 0}</td>${horizons.map(n =>
+    `<td>${g[`win${n}`] == null ? '--' : g[`win${n}`] + '%'}</td><td>${backtestMetric(g[`avg${n}`])}</td>`).join('')}</tr>`).join('');
+  return `<h4>${title}</h4><table class="stats-table"><thead><tr><th>分组</th><th>信号数</th>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function renderDivBacktest(payload) {
+  const body = document.getElementById('divBacktestBody');
+  if (!body) return;
+  if (!payload || !payload.by_lag) {
+    body.innerHTML = '<div class="empty">暂无可回测的历史快照</div>';
+    return;
+  }
+  const horizons = payload.horizons || [1, 3, 5, 10];
+  const lagNames = {2: '已收盘第二根', 3: '已收盘第三根', 4: '已收盘第四根'};
+  const sections = Object.entries(payload.by_lag).map(([lag, result]) => {
+    const meta = result.snapshot || {};
+    return `<section class="backtest-section">
+      <h3>${lagNames[lag] || `确认${lag}根`} <small>${esc(meta.scan_date || '--')}</small></h3>
+      ${renderBacktestAggregate(result.overall || {}, horizons)}
+      ${renderBacktestTable('按共振分', result.by_score, horizons)}
+      ${renderBacktestTable('按周期', result.by_tf, horizons)}
+    </section>`;
+  }).join('');
+  body.innerHTML = `<div class="sc-note">扫描日期：<b>${esc((payload.by_lag['4'] || payload.by_lag['2']).snapshot?.scan_date || '--')}</b> ·
+    收益从各信号确认日收盘价起算；未走满对应交易日的样本不计入该周期胜率和均收益。</div>${sections}`;
+}
+
+async function runDivBacktest() {
+  const body = document.getElementById('divBacktestBody');
+  const sel = document.getElementById('backtestSnapshot');
+  if (!body || !sel || !sel.value) {
+    if (body) body.innerHTML = '<div class="empty">暂无历史扫描快照</div>';
+    return;
+  }
+  body.innerHTML = '计算中…';
+  try {
+    const lag = document.getElementById('backtestLag')?.value || 'all';
+    const params = new URLSearchParams({snapshot_id: sel.value, lag, horizons: '1,3,5,10'});
+    const res = await apiFetch('/api/divergence-backtest?' + params.toString());
+    const payload = await res.json();
+    if (lag !== 'all' && payload.snapshot) {
+      payload.by_lag = {[String(payload.lag)]: payload};
+      payload.horizons = payload.horizons || [1, 3, 5, 10];
+    }
+    renderDivBacktest(payload);
+  } catch (e) {
+    body.innerHTML = '<div class="empty">回测失败，请检查本地K线缓存</div>';
+  }
+}
+
 /* 手动触发全市场底背离重扫(不影响16:00定时扫描) */
 async function triggerDivRescan() {
   const btn = document.getElementById('divRescanBtn');

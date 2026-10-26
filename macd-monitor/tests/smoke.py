@@ -35,6 +35,56 @@ def test_divergence_confirmation_lag():
     print("ok independent_divergence_structures")
 
 
+def test_historical_div_backtest_maturity():
+    """历史列表回测只把已经走满对应交易日的样本计入该周期统计。"""
+    import tempfile
+    import db
+    path = tempfile.mktemp(suffix=".db")
+    previous_path = db.DB_PATH
+    try:
+        db.DB_PATH = path
+        db._local.__dict__.clear()
+        db.init()
+        base = {"code": "000001", "tf": "day", "date2": "2026-10-20",
+                "date1": "2026-10-10", "price1": 100, "price2": 90,
+                "dif1": -3, "dif2": -2, "score": 5,
+                "confirm": "2026-10-20", "confirm_close": 100, "lag": 4}
+        early2 = {**base, "code": "000002", "lag": 2, "score": 2}
+        rows = [{**base}, {**early2, "_lag_only": True}]
+        db.upsert_signals(rows, "2026-10-20")
+        snapshot_id = db.create_div_snapshot(rows, "2026-10-20", "2026-10-20")
+        c = db.conn()
+        bars = [
+            ("000001", "day", "2026-10-20", 100),
+            ("000001", "day", "2026-10-21", 102),
+            ("000001", "day", "2026-10-22", 101),
+            ("000001", "day", "2026-10-23", 103),
+            ("000002", "day", "2026-10-20", 100),
+            ("000002", "day", "2026-10-21", 98),
+        ]
+        c.executemany(
+            "INSERT INTO kline_scan_cache(code,tf,label,c) VALUES(?,?,?,?)", bars)
+        c.commit()
+        result = db.historical_div_backtest(snapshot_id, 4, (1, 3, 5, 10))
+        assert result["overall"]["n1"] == 1
+        assert result["overall"]["n3"] == 1
+        assert result["overall"]["win1"] == 100.0
+        assert result["overall"]["win3"] == 100.0
+        result2 = db.historical_div_backtest(snapshot_id, 2, (1, 3))
+        assert result2["overall"]["n1"] == 1
+    finally:
+        active_conn = getattr(db._local, "conn", None)
+        if active_conn is not None:
+            active_conn.close()
+        db._local.__dict__.clear()
+        db.DB_PATH = previous_path
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+    print("ok historical_div_backtest_maturity")
+
+
 def test_features_no_lookahead():
     """篡改确认日之后的K线, 特征值必须不变"""
     import model
@@ -205,6 +255,7 @@ def test_calibrated_score():
 if __name__ == "__main__":
     test_db()
     test_divergence_confirmation_lag()
+    test_historical_div_backtest_maturity()
     test_features_no_lookahead()
     test_model_score_range()
     test_active_day_model_score()

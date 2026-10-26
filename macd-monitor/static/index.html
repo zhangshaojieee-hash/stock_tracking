@@ -307,6 +307,7 @@
           </div>
           <div class="vh-actions">
             <button class="stats-btn" onclick="openStats()" title="信号胜率复盘统计">复盘统计</button>
+            <button class="stats-btn" onclick="openDivBacktest()" title="选择历史扫描快照回测确认日后收益">历史回测</button>
             <button class="stats-btn" id="divRescanBtn" onclick="triggerDivRescan()" title="立即重扫全市场底背离(不影响16:00定时扫描)">立即更新</button>
             <button class="stats-btn" onclick="exportDivs()" title="将当前筛选结果导出为CSV(含Excel中文兼容)">导出</button>
             <span class="vh-meta mono" id="divUpd"></span>
@@ -583,6 +584,25 @@
       <button class="stats-close" onclick="closeStats()">✕</button>
     </div>
     <div class="stats-body" id="statsBody">加载中…</div>
+  </div>
+</div>
+<!-- 历史底背离列表回测弹窗 -->
+<div class="stats-mask" id="divBacktestBox" style="display:none" onclick="if(event.target===this)closeDivBacktest()">
+  <div class="stats-card">
+    <div class="stats-head">
+      <span class="login-title">历史底背离列表回测</span>
+      <button class="stats-close" onclick="closeDivBacktest()">✕</button>
+    </div>
+    <div class="stats-toolbar">
+      <select id="backtestSnapshot" onchange="runDivBacktest()" title="选择历史扫描快照"></select>
+      <select id="backtestLag" onchange="runDivBacktest()" title="选择确认K线">
+        <option value="all" selected>全部确认K线（按第二/三/四根分组）</option>
+        <option value="4">已收盘第四根</option>
+        <option value="2">已收盘第二根</option>
+        <option value="3">已收盘第三根</option>
+      </select>
+    </div>
+    <div class="stats-body" id="divBacktestBody">请选择扫描快照</div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
