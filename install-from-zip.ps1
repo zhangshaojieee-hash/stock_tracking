@@ -1,6 +1,6 @@
-# MACD 监控 Windows ZIP 一键安装器
-# 用法: 将仓库下载为 ZIP、解压后，双击 install-from-zip.bat。
-# 安装器不需要 Git；只需要 Windows PowerShell 5.1 和 Python 3。
+# MACD monitor Windows ZIP installer
+# Download the repository ZIP, extract it, then double-click install-from-zip.bat.
+# Git is not required. Python 3 is required.
 
 $ErrorActionPreference = 'Stop'
 $SourceRoot = (Resolve-Path $PSScriptRoot).Path
@@ -16,16 +16,16 @@ $Url = 'http://localhost:8688/'
 
 function Stop-WithMessage([string]$Message) {
     Write-Host ''
-    Write-Host "[错误] $Message" -ForegroundColor Red
-    Read-Host '按回车退出'
+    Write-Host "[ERROR] $Message" -ForegroundColor Red
+    Read-Host 'Press Enter to exit'
     exit 1
 }
 
 function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Label) {
-    Write-Host "[执行] $Label"
+    Write-Host "[RUN] $Label"
     & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "$Label 失败，退出码 $LASTEXITCODE"
+        throw "$Label failed with exit code $LASTEXITCODE"
     }
 }
 
@@ -83,21 +83,21 @@ function Refresh-Path {
 }
 
 Write-Host '=============================================================='
-Write-Host '  MACD 监控 ZIP 一键安装 (Windows)'
-Write-Host "  源码目录: $SourceRoot"
-Write-Host "  安装目录: $AppDir"
+Write-Host '  MACD monitor ZIP installer (Windows)'
+Write-Host "  Source: $SourceRoot"
+Write-Host "  Install: $AppDir"
 Write-Host '=============================================================='
 
 try {
     if (-not (Test-Path (Join-Path $SourceRoot 'macd-monitor\webui.py'))) {
-        Stop-WithMessage '请从仓库 ZIP 解压后的根目录运行此脚本。'
+        Stop-WithMessage 'Run this script from the extracted repository root.'
     }
 
     $systemPythonPath = Find-Python
     if (-not $systemPythonPath) {
         $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
         if ($winget) {
-            Write-Host '[安装] 未检测到 Python，尝试使用 Windows 包管理器安装 Python 3.13...'
+            Write-Host '[SETUP] Python not found. Trying to install Python 3.13 with winget...'
             & $winget.Source install --id Python.Python.3.13 --exact --scope user --accept-source-agreements --accept-package-agreements
             if ($LASTEXITCODE -eq 0) {
                 Refresh-Path
@@ -106,15 +106,15 @@ try {
         }
     }
     if (-not $systemPythonPath) {
-        Stop-WithMessage '未检测到 Python 3。请先安装 https://www.python.org/downloads/windows/，安装时勾选 Add python.exe to PATH，然后重新运行此脚本。'
+        Stop-WithMessage 'Python 3 was not found. Install it from https://www.python.org/downloads/windows/ and enable Add python.exe to PATH, then run this script again.'
     }
-    Write-Host "[检查] Python: $systemPythonPath"
+    Write-Host "[CHECK] Python: $systemPythonPath"
 
     if (-not (Test-Path $AppDir)) {
         New-Item -ItemType Directory -Path $AppDir | Out-Null
     }
     if ((Resolve-Path $SourceRoot).Path -ne (Resolve-Path $AppDir).Path) {
-        Write-Host '[复制] 正在复制源码到安装目录，保留已有运行数据...'
+        Write-Host '[COPY] Copying source while preserving runtime data...'
         $items = Get-ChildItem -LiteralPath $SourceRoot -Force
         foreach ($item in $items) {
             $destination = Join-Path $AppDir $item.Name
@@ -138,23 +138,23 @@ try {
     }
 
     if (-not (Test-Path $Python)) {
-        Invoke-Checked $systemPythonPath @('-m', 'venv', $VenvDir) '创建 Python 虚拟环境'
+        Invoke-Checked $systemPythonPath @('-m', 'venv', $VenvDir) 'Create Python virtual environment'
     }
-    Invoke-Checked $Python @('-m', 'pip', 'install', '--upgrade', 'pip') '准备 Python 包管理器'
-    Invoke-Checked $Python @('-m', 'pip', 'install', 'requests') '安装 Python 依赖 requests'
+    Invoke-Checked $Python @('-m', 'pip', 'install', '--upgrade', 'pip') 'Prepare pip'
+    Invoke-Checked $Python @('-m', 'pip', 'install', 'requests') 'Install requests'
 
     if (-not (Test-Path $CodeDir)) {
-        throw "安装目录不完整: $CodeDir"
+        throw "Install directory is incomplete: $CodeDir"
     }
     Set-Location $CodeDir
     if (-not (Test-Path 'config.json')) {
         Copy-Item 'config.example.json' 'config.json'
-        Write-Host '[配置] 已生成 config.json，默认使用示例股票。'
+        Write-Host '[CONFIG] Created config.json from the example.'
     } else {
-        Write-Host '[配置] 已存在 config.json，保留现有配置。'
+        Write-Host '[CONFIG] Existing config.json was preserved.'
     }
 
-    Invoke-Checked $Python @('monitor.py', '--report') '验证监控程序'
+    Invoke-Checked $Python @('monitor.py', '--report') 'Validate monitor'
 
     $old = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         $_.Name -eq 'python.exe' -and $_.CommandLine -like "*$CodeDir*webui.py*"
@@ -183,7 +183,7 @@ try {
         } catch { }
     }
     if (-not $ready) {
-        throw "Web UI 启动失败，请查看 $WebErr"
+        throw "Web UI failed to start. Check $WebErr"
     }
 
     $monitor = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
@@ -192,23 +192,23 @@ try {
     if ($monitor.Count -eq 0) {
         Start-Process -FilePath $Python -ArgumentList @('monitor.py') -WorkingDirectory $CodeDir `
             -RedirectStandardOutput $MonitorLog -RedirectStandardError $MonitorErr -WindowStyle Hidden
-        Write-Host '[启动] 监控程序已在后台启动。'
+        Write-Host '[START] Monitor started in the background.'
     } else {
-        Write-Host '[启动] 监控程序已经在运行。'
+        Write-Host '[START] Monitor is already running.'
     }
 
     Start-Process $Url
     Write-Host ''
     Write-Host '==============================================================' -ForegroundColor Green
-    Write-Host '  安装完成，浏览器已打开。' -ForegroundColor Green
-    Write-Host "  本地地址: $Url" -ForegroundColor Cyan
-    Write-Host "  安装目录: $AppDir"
-    Write-Host "  Web UI 日志: $WebLog"
-    Write-Host "  Web UI 错误: $WebErr"
-    Write-Host "  监控日志: $MonitorLog"
-    Write-Host "  监控错误: $MonitorErr"
+    Write-Host '  Installation complete. Browser opened.' -ForegroundColor Green
+    Write-Host "  Local URL: $Url" -ForegroundColor Cyan
+    Write-Host "  Install: $AppDir"
+    Write-Host "  Web log: $WebLog"
+    Write-Host "  Web error: $WebErr"
+    Write-Host "  Monitor log: $MonitorLog"
+    Write-Host "  Monitor error: $MonitorErr"
     Write-Host '==============================================================' -ForegroundColor Green
-    Read-Host '按回车关闭安装窗口'
+    Read-Host 'Press Enter to close'
 } catch {
     Stop-WithMessage $_.Exception.Message
 }

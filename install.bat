@@ -2,9 +2,9 @@
 chcp 65001 >nul
 setlocal DisableDelayedExpansion
 
-:: MACD 监控 Windows 一键安装脚本
-:: 用法: 双击运行。若当前是 GitHub ZIP 解压目录，会自动使用本地 ZIP 安装器。
-:: 远程单独下载本文件时，则使用 Git 克隆安装流程。
+:: MACD monitor Windows installer
+:: When run from a GitHub ZIP, it uses the local ZIP installer.
+:: When downloaded alone, it uses the Git clone installer.
 
 if exist "%~dp0macd-monitor\webui.py" if exist "%~dp0install-from-zip.bat" goto zip_install
 
@@ -12,79 +12,79 @@ set "REPO_URL=https://github.com/zhangshaojieee-hash/stock_tracking.git"
 set "APP_DIR=%USERPROFILE%\macd-monitor"
 
 echo ==============================================================
-echo   MACD 监控一键安装 (Windows)
-echo   安装目录: %APP_DIR%
+echo   MACD monitor installer (Windows)
+echo   Install directory: %APP_DIR%
 echo ==============================================================
 
-:: ---------- 1. 检查 git ----------
+:: ---------- 1. Check git ----------
 where git >nul 2>nul
 if errorlevel 1 (
-    echo [错误] 未检测到 git, 请先安装: https://git-scm.com/download/win
+    echo [ERROR] git was not found. Install it from: https://git-scm.com/download/win
     pause
     exit /b 1
 )
 
-:: ---------- 2. 检查 python ----------
+:: ---------- 2. Check python ----------
 where python >nul 2>nul
 if errorlevel 1 (
-    echo [错误] 未检测到 python, 请先安装: https://www.python.org/downloads/
-    echo        安装时勾选 "Add python.exe to PATH"
+    echo [ERROR] Python was not found. Install it from: https://www.python.org/downloads/
+    echo        Enable "Add python.exe to PATH" during setup
     pause
     exit /b 1
 )
 for /f "tokens=*" %%i in ('python --version') do echo [OK] %%i
 
-:: ---------- 3. 获取代码 ----------
+:: ---------- 3. Get source ----------
 if exist "%APP_DIR%\macd-monitor\monitor.py" (
-    echo [更新] 代码已存在, 拉取最新版本...
+    echo [UPDATE] Existing source found. Pulling latest version...
     git -C "%APP_DIR%" pull --ff-only
 ) else (
-    echo [克隆] %REPO_URL% ...
+    echo [CLONE] %REPO_URL% ...
     git clone "%REPO_URL%" "%APP_DIR%"
     if errorlevel 1 (
-        echo [错误] 克隆失败, 请检查网络或代理设置
+        echo [ERROR] Clone failed. Check network or proxy settings.
         pause
         exit /b 1
     )
 )
 
-:: ---------- 4. 安装依赖 ----------
-echo [安装] python 依赖 requests ...
+:: ---------- 4. Install dependencies ----------
+echo [SETUP] Installing Python dependency requests ...
 python -m pip install --user -q requests
 if errorlevel 1 (
-    echo [错误] 依赖安装失败
+    echo [ERROR] Dependency installation failed
     pause
     exit /b 1
 )
 
-:: ---------- 5. 初始化配置 ----------
+:: ---------- 5. Initialize config ----------
 cd /d "%APP_DIR%\macd-monitor"
 if not exist config.json (
     copy config.example.json config.json >nul
-    echo [配置] 已生成 config.json, 请稍后编辑填入飞书 webhook
+    echo [CONFIG] Created config.json. Edit it to add your optional Feishu webhook.
 ) else (
-    echo [配置] config.json 已存在, 保留现有配置
+    echo [CONFIG] Existing config.json preserved
 )
 
-:: ---------- 6. 验证 ----------
-echo [验证] 运行状态报告...
+:: ---------- 6. Validate ----------
+echo [CHECK] Running status report...
 python monitor.py --report
 if errorlevel 1 (
     echo.
-    echo [错误] 验证失败, 请检查上方报错信息
+    echo [ERROR] Validation failed. Check the error above.
     pause
     exit /b 1
 )
 
 echo.
 echo ==============================================================
-echo   安装完成!
+echo   Installation complete!
 echo.
-echo   启动监控:     cd %APP_DIR%\macd-monitor ^&^& python monitor.py
-echo   启动 Web UI:   cd %APP_DIR%\macd-monitor ^&^& python webui.py
-echo                 浏览器打开 http://localhost:8688
+echo   Start monitor: cd %APP_DIR%\macd-monitor ^&^& python monitor.py
+echo   Start Web UI:  cd %APP_DIR%\macd-monitor ^&^& python webui.py
+echo                 Open http://localhost:8688
 echo.
-echo   飞书通知:     编辑 %APP_DIR%\macd-monitor\config.json 填入 webhook_url
+echo   Feishu:       Edit %APP_DIR%\macd-monitor\config.json if needed
 echo ==============================================================
 pause
 exit /b 0
