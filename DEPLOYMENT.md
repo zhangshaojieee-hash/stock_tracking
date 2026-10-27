@@ -5,7 +5,7 @@
 - **方式一：从公开 GitHub 仓库克隆**。适合需要持续更新代码、查看提交记录或参与协作的情况。
 - **方式二：使用完整本地交付包**。适合只需要在本机复现当前运行环境、个人自选和测试数据库的情况。
 
-项目仓库：<https://github.com/zhangshaojieee-hash/stock_tracking>
+项目仓库：[https://github.com/zhangshaojieee-hash/stock_tracking](https://github.com/zhangshaojieee-hash/stock_tracking)
 
 ## 方式一：从公开仓库克隆
 
@@ -13,8 +13,8 @@
 
 Windows 建议准备：
 
-- Git：<https://git-scm.com/download/win>
-- Python 3：<https://www.python.org/downloads/>
+- Git：[https://git-scm.com/download/win](https://git-scm.com/download/win)
+- Python 3：[https://www.python.org/downloads/](https://www.python.org/downloads/)
 - 安装 Python 时勾选 `Add python.exe to PATH`
 
 Ubuntu/Debian 可以直接使用仓库中的 `install.sh`。
@@ -33,6 +33,26 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/zha
 2. 安装 Python 依赖 `requests`。
 3. 根据 `config.example.json` 创建本地 `config.json`。
 4. 执行状态报告检查安装结果。
+
+### 3. 不安装 Git：下载 ZIP 后双击安装
+
+如果同事不想安装 Git，可以在 GitHub 点击 **Code → Download ZIP**：
+
+1. 解压 ZIP 文件。
+2. 打开解压后的仓库根目录。
+3. 双击 `install-from-zip.bat`；也可以双击普通的 `install.bat`，它会自动识别 ZIP 解压目录。
+4. 安装器直接使用 ZIP 解压后的目录，创建同级 `.venv`，安装 `requests`，生成 `macd-monitor\config.json`，后台启动监控和 Web UI，并自动打开 `http://localhost:8688/`。
+
+这种方式只需要提前安装 Python 3，并在安装时勾选 `Add python.exe to PATH`。安装器会复用已有 `.venv`，不重复升级 pip；依赖默认从较快的镜像安装，失败时自动回退官方源。重复运行不会覆盖解压目录中的 `config.json`、`data.db`、`state.json`、模型和日志。需要指定公司内网镜像时，可在 PowerShell 中先设置 `$env:PIP_INDEX_URL` 再运行安装器。
+
+安装器会从示例配置生成默认配置。首次使用前，请编辑解压目录下的 `macd-monitor\config.json`，填写自己的股票和可选的飞书机器人配置。虚拟环境位置为解压目录下的 `.venv`。
+
+也可以在 PowerShell 中运行：
+
+```powershell
+Set-Location "解压后的仓库目录"
+.\install-from-zip.ps1
+```
 
 也可以手动执行：
 
@@ -70,7 +90,7 @@ Set-Location "$env:USERPROFILE\macd-monitor\macd-monitor"
 python webui.py
 ```
 
-浏览器访问：<http://127.0.0.1:8688/>
+浏览器访问：[http://127.0.0.1:8688/](http://127.0.0.1:8688/)
 
 也可以使用仓库中的 `启动MACD网站.bat`，但首次使用前应先确认 Python、配置文件和依赖已经准备完成。
 
@@ -183,16 +203,17 @@ Set-Location "$target\macd-monitor"
 python webui.py
 ```
 
-浏览器访问：<http://127.0.0.1:8688/>
+浏览器访问：[http://127.0.0.1:8688/](http://127.0.0.1:8688/)
 
 ## 选择建议
 
-| 场景 | 推荐方式 |
-| --- | --- |
+| 场景                           | 推荐方式               |
+| ------------------------------ | ---------------------- |
 | 只需要运行当前版本和测试数据库 | 方式二：完整本地交付包 |
-| 需要持续获取代码更新 | 方式一：公开仓库克隆 |
-| 需要提交代码或参与协作 | 方式一：公开仓库克隆 |
-| 需要保留当前个人自选和数据库 | 方式二：完整本地交付包 |
+| 同事不想安装 Git               | 方式一：下载 ZIP 双击安装 |
+| 需要持续获取代码更新           | 方式一：公开仓库克隆   |
+| 需要提交代码或参与协作         | 方式一：公开仓库克隆   |
+| 需要保留当前个人自选和数据库   | 方式二：完整本地交付包 |
 
 ## 配置、数据和许可证
 
@@ -212,7 +233,7 @@ python webui.py
 
 ### 许可证和上游来源
 
-本项目基于 <https://github.com/huigezhi/stock_tracking>，上游使用 Apache License 2.0。使用、修改或转发时请保留：
+本项目基于 [https://github.com/huigezhi/stock_tracking](https://github.com/huigezhi/stock_tracking)，上游使用 Apache License 2.0。使用、修改或转发时请保留：
 
 - 根目录 `LICENSE`
 - 根目录 `THIRD_PARTY_NOTICES.txt`

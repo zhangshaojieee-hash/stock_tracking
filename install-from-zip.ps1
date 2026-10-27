@@ -43,6 +43,9 @@ function Test-PythonExecutable([string]$Path) {
 function Find-Python {
     $candidates = New-Object System.Collections.Generic.List[string]
 
+    # Reuse the interpreter already created by a previous installation.
+    $candidates.Add($Python)
+
     foreach ($root in @(
         (Join-Path $env:LocalAppData 'Programs\Python'),
         (Join-Path $env:ProgramFiles 'Python'),
@@ -81,6 +84,18 @@ function Refresh-Path {
     $env:Path = "$machine;$user"
 }
 
+function Install-Requests {
+    $common = @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--prefer-binary', '--timeout', '15', '--retries', '1', 'requests')
+    $mirror = if ($env:PIP_INDEX_URL) { $env:PIP_INDEX_URL } else { 'https://pypi.tuna.tsinghua.edu.cn/simple' }
+    $mirrorArgs = @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--prefer-binary', '--timeout', '15', '--retries', '1', '--index-url', $mirror, 'requests')
+    Write-Host '[SETUP] Installing requests from the fast mirror...'
+    & $Python @mirrorArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '[SETUP] Mirror failed. Retrying with the default Python package index...'
+        Invoke-Checked $Python $common 'Install requests'
+    }
+}
+
 Write-Host '=============================================================='
 Write-Host '  MACD monitor ZIP installer (Windows)'
 Write-Host "  Install: $AppDir"
@@ -96,7 +111,7 @@ try {
         $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
         if ($winget) {
             Write-Host '[SETUP] Python not found. Trying to install Python 3.13 with winget...'
-            & $winget.Source install --id Python.Python.3.13 --exact --scope user --accept-source-agreements --accept-package-agreements
+            & $winget.Source install --id Python.Python.3.13 --exact --scope user --silent --disable-interactivity --accept-source-agreements --accept-package-agreements
             if ($LASTEXITCODE -eq 0) {
                 Refresh-Path
                 $systemPythonPath = Find-Python
@@ -113,8 +128,7 @@ try {
     if (-not (Test-Path $Python)) {
         Invoke-Checked $systemPythonPath @('-m', 'venv', $VenvDir) 'Create Python virtual environment'
     }
-    Invoke-Checked $Python @('-m', 'pip', 'install', '--upgrade', 'pip') 'Prepare pip'
-    Invoke-Checked $Python @('-m', 'pip', 'install', 'requests') 'Install requests'
+    Install-Requests
 
     if (-not (Test-Path $CodeDir)) {
         throw "Install directory is incomplete: $CodeDir"
