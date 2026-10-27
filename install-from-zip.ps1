@@ -29,11 +29,48 @@ function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Label)
     }
 }
 
+function Test-PythonExecutable([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    try {
+        & $Path --version *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
 function Find-Python {
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    foreach ($root in @(
+        (Join-Path $env:LocalAppData 'Programs\Python'),
+        (Join-Path $env:ProgramFiles 'Python'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Python'),
+        (Join-Path $env:USERPROFILE '.pyenv\pyenv-win\versions')
+    )) {
+        if (Test-Path -LiteralPath $root) {
+            Get-ChildItem -LiteralPath $root -Recurse -Filter 'python.exe' -File -ErrorAction SilentlyContinue |
+                Sort-Object FullName -Descending |
+                ForEach-Object { $candidates.Add($_.FullName) }
+        }
+    }
+
+    if ($env:VIRTUAL_ENV) {
+        $candidates.Add((Join-Path $env:VIRTUAL_ENV 'Scripts\python.exe'))
+    }
+
     foreach ($name in @('python.exe', 'py.exe')) {
         $command = Get-Command $name -ErrorAction SilentlyContinue
-        if ($command) {
-            return $command.Source
+        if ($command -and $command.Source -notlike '*\WindowsApps\*') {
+            $candidates.Add($command.Source)
+        }
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (Test-PythonExecutable $candidate) {
+            return $candidate
         }
     }
     return $null

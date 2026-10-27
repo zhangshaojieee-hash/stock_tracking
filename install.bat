@@ -1,10 +1,12 @@
 @echo off
 chcp 65001 >nul
-setlocal enabledelayedexpansion
+setlocal DisableDelayedExpansion
 
 :: MACD 监控 Windows 一键安装脚本
-:: 用法: 双击运行 或 在 cmd 中执行 install.bat
-:: 包含: 安装依赖 -> 克隆代码 -> 初始化配置 -> 验证
+:: 用法: 双击运行。若当前是 GitHub ZIP 解压目录，会自动使用本地 ZIP 安装器。
+:: 远程单独下载本文件时，则使用 Git 克隆安装流程。
+
+if exist "%~dp0macd-monitor\webui.py" if exist "%~dp0install-from-zip.bat" goto zip_install
 
 set "REPO_URL=https://github.com/zhangshaojieee-hash/stock_tracking.git"
 set "APP_DIR=%USERPROFILE%\macd-monitor"
@@ -85,3 +87,9 @@ echo.
 echo   飞书通知:     编辑 %APP_DIR%\macd-monitor\config.json 填入 webhook_url
 echo ==============================================================
 pause
+exit /b 0
+
+:zip_install
+call "%~dp0install-from-zip.bat"
+set "ZIP_EXIT=%errorlevel%"
+exit /b %ZIP_EXIT%
