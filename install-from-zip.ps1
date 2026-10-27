@@ -3,8 +3,7 @@
 # Git is not required. Python 3 is required.
 
 $ErrorActionPreference = 'Stop'
-$SourceRoot = (Resolve-Path $PSScriptRoot).Path
-$AppDir = Join-Path $env:USERPROFILE 'macd-monitor'
+$AppDir = (Resolve-Path $PSScriptRoot).Path
 $CodeDir = Join-Path $AppDir 'macd-monitor'
 $VenvDir = Join-Path $AppDir '.venv'
 $Python = Join-Path $VenvDir 'Scripts\python.exe'
@@ -84,12 +83,11 @@ function Refresh-Path {
 
 Write-Host '=============================================================='
 Write-Host '  MACD monitor ZIP installer (Windows)'
-Write-Host "  Source: $SourceRoot"
 Write-Host "  Install: $AppDir"
 Write-Host '=============================================================='
 
 try {
-    if (-not (Test-Path (Join-Path $SourceRoot 'macd-monitor\webui.py'))) {
+    if (-not (Test-Path (Join-Path $AppDir 'macd-monitor\webui.py'))) {
         Stop-WithMessage 'Run this script from the extracted repository root.'
     }
 
@@ -110,33 +108,8 @@ try {
     }
     Write-Host "[CHECK] Python: $systemPythonPath"
 
-    if (-not (Test-Path $AppDir)) {
-        New-Item -ItemType Directory -Path $AppDir | Out-Null
-    }
-    if ((Resolve-Path $SourceRoot).Path -ne (Resolve-Path $AppDir).Path) {
-        Write-Host '[COPY] Copying source while preserving runtime data...'
-        $items = Get-ChildItem -LiteralPath $SourceRoot -Force
-        foreach ($item in $items) {
-            $destination = Join-Path $AppDir $item.Name
-            if ($item.Name -in @('.git', '.venv')) { continue }
-            if ($item.PSIsContainer) {
-                $sourceChild = $item.FullName
-                $destinationChild = Join-Path $AppDir $item.Name
-                if (-not (Test-Path $destinationChild)) { New-Item -ItemType Directory -Path $destinationChild | Out-Null }
-                Get-ChildItem -LiteralPath $sourceChild -Recurse -File -Force | ForEach-Object {
-                    $relative = $_.FullName.Substring($SourceRoot.Length).TrimStart('\')
-                    if ($relative -match '(^|\\)(config\.json|data\.db($|-)|state\.json|.*\.log$|.*\.bak$|.*\.db-(shm|wal)$)') { return }
-                    $target = Join-Path $AppDir $relative
-                    $parent = Split-Path $target -Parent
-                    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-                    Copy-Item -LiteralPath $_.FullName -Destination $target -Force
-                }
-            } elseif ($item.Name -notmatch '^(config\.json|data\.db($|-)|state\.json|.*\.log$|.*\.bak$)$') {
-                Copy-Item -LiteralPath $item.FullName -Destination $destination -Force
-            }
-        }
-    }
-
+    Write-Host '[PATH] Using the extracted folder as the install directory.'
+    Write-Host '[PATH] Runtime data in this folder will be preserved.'
     if (-not (Test-Path $Python)) {
         Invoke-Checked $systemPythonPath @('-m', 'venv', $VenvDir) 'Create Python virtual environment'
     }
