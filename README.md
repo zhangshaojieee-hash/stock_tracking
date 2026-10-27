@@ -216,6 +216,8 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/zha
 
 命令直接从网络执行，不在本地留下安装脚本。也可以 [下载 install.ps1](install.ps1) 后执行，或使用 [install.bat](install.bat)（双击运行）。
 
+如果同事不想安装 Git：在 GitHub 点击 **Code → Download ZIP**，解压后双击 [install-from-zip.bat](install-from-zip.bat)。它会把源码复制到 `%USERPROFILE%\macd-monitor`，创建独立 Python 环境，安装依赖，保留已有运行数据，后台启动监控和 Web UI，并自动打开 `http://localhost:8688/`。此方式需要先安装 Python 3。
+
 ### Windows（cmd）
 
 ```bat
@@ -416,6 +418,8 @@ Invoke-WebRequest http://127.0.0.1:1200/cls/telegraph -UseBasicParsing
 ├── install.sh            # Ubuntu/Debian 一键安装（本地运行）
 ├── install.ps1           # Windows 一键安装（PowerShell，支持一行命令）
 ├── install.bat           # Windows 一键安装（cmd / 双击运行）
+├── install-from-zip.ps1  # Windows ZIP 解压后一键安装
+├── install-from-zip.bat  # Windows ZIP 安装器双击入口
 ├── uninstall.sh          # Linux 一键卸载（终止进程/移除服务/删除目录）
 ├── uninstall.ps1         # Windows 一键卸载（PowerShell）
 ├── deploy.sh             # VPS 服务器部署（systemd 开机自启 + 模型每日重训）
